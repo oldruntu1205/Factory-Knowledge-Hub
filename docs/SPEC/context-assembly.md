@@ -32,17 +32,21 @@ L1 §8.4 把这条列为 P0：parent 混合了可公开与内部段落时，不�
 - `max_blocks`（默认 8）与 `max_tokens`（默认 6000）双限，超出计入 `dropped`；
 - 被 ACL 拒绝的计入 `denied`，与预算丢弃分开统计——两者原因不同，混在一起会让排障误判。
 
-## 4. 接线时机
+## 4. 接线
 
-当前**尚未接入 HTTP**。`/v1/knowledge/search` 只返回片段级候选，组装发生在问答阶段
-（`POST /v1/knowledge/answer`），而问答链路依赖 ADR-04/06 的模型选型。
+已接入 `POST /v1/knowledge/context`（内部端点，`x-internal: true`，不对外承诺）。
 
-这条不是遗漏，是分层：检索端点给的是"候选"，上下文是针对某次生成任务定制的，
-两者预算与去重策略不同，不应该压成一个接口。
+设计约束：
 
-接入时的要求：
-- 组装结果必须带 `from_parent` 标志，便于审计时区分"用了整段"还是"只用了片段"；
-- `parent_restores` 数要进检索审计，异常升高通常意味着 ACL 配置变宽了。
+- **必须走 `SearchService`**，不能直接调 `LexicalRetriever`——否则绕过 `retrieval_queries`
+  审计，"谁在什么范围查了什么"就断链了；
+- 权限与 `/v1/knowledge/search` 一致（`knowledge.search` + 令牌 `allowed_scopes`）；
+- 审计密钥未配置时返回 503，不静默返回空结果；
+- 响应带 `from_parent` 标志，用于区分"用了整段父块"还是"只用了片段"；
+- `stats.parent_restores` 异常升高通常意味着 ACL 配置变宽，值得报警。
+
+与检索端点分开而不是合并，是因为两者预算与去重策略不同：检索给的是候选，
+上下文是针对某次生成任务定制的。合成一个接口会让两边参数互相牵制。
 
 ## 5. 与证据端点的一致性
 

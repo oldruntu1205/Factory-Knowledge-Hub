@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, install_error_handlers
 from fkh.api.models import AnswerRequest, TrainingAskRequest
+from fkh.api.routes_context import router as context_router
 from fkh.api.routes_evidence import router as evidence_router
 from fkh.api.routes_review import router as review_router
 from fkh.api.routes_search import router as search_router
@@ -149,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_contract_routes(app)
     app.include_router(review_router)
+    app.include_router(context_router)
     app.include_router(evidence_router)
     app.include_router(search_router)
 

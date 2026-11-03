@@ -252,6 +252,38 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/knowledge/context:
+    post:
+      tags: [knowledge]
+      summary: 检索并组装生成用上下文（内部端点）
+      description: |
+        问答链路的前置步骤，不对外承诺。
+        每一块都经过 ACL 判定；父块仅在其下全部子块均可见时整段返回，否则退回子块原文。
+        必须经过检索审计，权限与 /v1/knowledge/search 相同。
+      x-internal: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query, knowledge_scope]
+              properties:
+                query: { type: string, minLength: 1, maxLength: 2000 }
+                knowledge_scope:
+                  type: string
+                  enum: [customer_public, internal_training, internal_product]
+                max_results: { type: integer, minimum: 1, maximum: 50, default: 10 }
+                max_blocks: { type: integer, minimum: 1, maximum: 20, default: 8 }
+                max_tokens: { type: integer, minimum: 500, maximum: 20000, default: 6000 }
+      responses:
+        "200": { description: 上下文块与统计（denied / dropped / parent_restores） }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { description: 检索审计未配置 }
+
   /v1/knowledge/answer:
     post:
       tags: [knowledge]

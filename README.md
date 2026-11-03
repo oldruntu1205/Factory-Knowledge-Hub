@@ -68,7 +68,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 204 项：契约 + ACL + 状态机 + 解析 + 切片 + 入库 + 审核发布
+uv run pytest -q              # 313 项：契约 + ACL + 状态机 + 解析 + 入库 + 审核 + 检索 + 引用核验
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -111,7 +111,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 274 项，其中 175 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 313 项，其中 193 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -141,6 +141,9 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | 入库：版本与审计、父子引用、中文检索、重复内容、跨租户 | `tests/e2e/test_ingestion_flow.py`（10 项） | ✅ 通过 |
 | 审核：全链路、双签拒绝、C1 不得公开、撤销即时生效 | `tests/e2e/test_review_flow.py`（10 项） | ✅ 通过 |
 | 审核 API：权限分层、公开审批额外权限、错误码不泄露存在性 | `tests/e2e/test_review_api.py`（8 项） | ✅ 通过 |
+| 检索：入库到检索的真实链路（跨 lane 接缝） | `tests/e2e/test_ingest_to_search.py`（6 项） | ✅ 通过 |
+| 上下文：父块恢复、混合权限降级、预算控制 | `tests/e2e/test_context_assembly.py`（8 项） | ✅ 通过 |
+| 引用核验：编造引用转人工、无证据拒答、响应合契约 | `tests/security/test_citation_verification.py`（15 项） | ✅ 通过 |
 | outbox：租约/令牌互斥、过期后旧 worker 确认影响 0 行、业务角色零行可见 | `tests/workers/test_outbox_relay.py`（24 项） | ✅ 通过 |
 | outbox：同聚合按 (版本, ordinal) 串行，退避/死信阻塞后继，第 8 次失败进死信 | 同上 | ✅ 通过 |
 | outbox：发布后撤销产生两条有序事件，顺序键不被唯一约束拒绝 | `tests/e2e/test_outbox_ordering.py` | ✅ 通过 |

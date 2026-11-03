@@ -84,3 +84,26 @@ class SearchRequest(BaseModel):
         if not value.strip():
             raise ValueError("query 不能为空白")
         return value
+
+
+class ContextRequest(BaseModel):
+    """检索并组装生成用上下文（内部端点）。
+
+    这是问答链路的前置步骤，不是对外承诺的接口。权限与 `knowledge.search` 相同，
+    额外限制上下文预算，避免被用来批量拉取全文。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=2000)
+    knowledge_scope: KnowledgeScope
+    max_results: int = Field(default=10, ge=1, le=50)
+    max_blocks: int = Field(default=8, ge=1, le=20)
+    max_tokens: int = Field(default=6000, ge=500, le=20000)
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query 不能为空白")
+        return value

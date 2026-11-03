@@ -31,6 +31,7 @@ _COUNTER = ApproxCjkTokenCounter()
 class ContextBlock:
     chunk_id: UUID
     version_id: UUID
+    document_id: UUID
     # True 表示这块是整段恢复的 parent（含未命中的兄弟内容）；False 表示只用命中 child 的原文
     from_parent: bool
     text: str
@@ -42,7 +43,9 @@ class ContextBlock:
 @dataclass(frozen=True, slots=True)
 class ContextAssembly:
     blocks: tuple[ContextBlock, ...]
-    # 因未通过 ACL 而被丢弃的命中数
+    # 因未通过 ACL 而在本层被丢弃的命中数。
+    # 检索层已按 ACL 过滤过一遍，因此通常为 0；非零意味着"检索放行、组装阶段才被拒"，
+    # 多见于两次查询之间策略被改窄，或兄弟块可见性发生变化。
     denied: int
     # 因预算（块数或 token 上限）被舍弃的块数
     dropped: int
@@ -83,10 +86,12 @@ def assemble_context(
 
     hit_ids = [hit.chunk_id for hit in hits]
     rows = conn.execute(
-        """SELECT id, parent_chunk_id, version_id, chunk_kind, chunk_text,
-                  locator, heading_path, acl_policy_id
-             FROM knowledge_chunks
-            WHERE tenant_id = %s AND id = ANY(%s)""",
+        """SELECT c.id, c.parent_chunk_id, c.version_id, c.chunk_kind, c.chunk_text,
+                  c.locator, c.heading_path, c.acl_policy_id, v.document_id
+             FROM knowledge_chunks c
+             JOIN knowledge_versions v
+               ON v.tenant_id = c.tenant_id AND v.id = c.version_id
+            WHERE c.tenant_id = %s AND c.id = ANY(%s)""",
         (tenant_id, hit_ids),
     ).fetchall()
     by_id = {UUID(str(row[0])): row for row in rows}
@@ -133,7 +138,9 @@ def assemble_context(
 
     children_by_parent: dict[str, list[ChunkAcl]] = {}
     parents: dict[str, ChunkAcl] = {}
-    parent_text: dict[str, tuple[str, dict[str, Any] | None, tuple[str, ...] | None, UUID]] = {}
+    parent_text: dict[
+        str, tuple[str, dict[str, Any] | None, tuple[str, ...] | None, UUID, UUID]
+    ] = {}
 
     for row in siblings:
         sid, sparent, sacl, _kind = UUID(str(row[0])), row[1], row[2], row[3]
@@ -144,13 +151,20 @@ def assemble_context(
 
     if parent_ids:
         for row in conn.execute(
-            """SELECT id, chunk_text, locator, heading_path, version_id
-                 FROM knowledge_chunks
-                WHERE tenant_id = %s AND id = ANY(%s)""",
+            """SELECT c.id, c.chunk_text, c.locator, c.heading_path, c.version_id, v.document_id
+                 FROM knowledge_chunks c
+                 JOIN knowledge_versions v
+                   ON v.tenant_id = c.tenant_id AND v.id = c.version_id
+                WHERE c.tenant_id = %s AND c.id = ANY(%s)""",
             (tenant_id, list(parent_ids)),
         ).fetchall():
-            parent_text[str(row[0])] = (str(row[1]), dict(row[2]) if row[2] else None,
-                                        tuple(row[3]) if row[3] else None, UUID(str(row[4])))
+            parent_text[str(row[0])] = (
+                str(row[1]),
+                dict(row[2]) if row[2] else None,
+                tuple(row[3]) if row[3] else None,
+                UUID(str(row[4])),
+                UUID(str(row[5])),
+            )
 
     plan: RestorePlan = plan_restore(
         [hit_acls[hit.chunk_id] for hit in hits if hit.chunk_id in hit_acls],
@@ -184,6 +198,7 @@ def assemble_context(
         block_locator: dict[str, Any] | None
         block_heading: tuple[str, ...] | None
         block_version: UUID
+        block_document: UUID
 
         if use_parent and parent_id is not None:
             if parent_id in used_parents:
@@ -193,6 +208,7 @@ def assemble_context(
             block_locator = parent_row[1]
             block_heading = parent_row[2]
             block_version = parent_row[3]
+            block_document = parent_row[4]
             chunk_id = UUID(parent_id)
         else:
             # 同一父块下不同 child 各自成块，不能按 parent 去重——它们是不同内容
@@ -200,6 +216,7 @@ def assemble_context(
             block_locator = dict(hit_row[5]) if hit_row[5] else None
             block_heading = tuple(hit_row[6]) if hit_row[6] else None
             block_version = UUID(str(hit_row[2]))
+            block_document = UUID(str(hit_row[8]))
             chunk_id = hit.chunk_id
 
         tokens = _COUNTER.count(block_text)
@@ -215,6 +232,7 @@ def assemble_context(
             ContextBlock(
                 chunk_id=chunk_id,
                 version_id=block_version,
+                document_id=block_document,
                 from_parent=use_parent,
                 text=block_text,
                 tokens=tokens,
