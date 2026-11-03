@@ -64,7 +64,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 57 项：契约 + 跨租户 + 状态机 + 培训规则
+uv run pytest -q              # 93 项：契约 + ACL 判定 + 父块隔离 + 跨租户 + 状态机 + 培训规则
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -103,10 +103,14 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 57 项）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 93 项，其中 31 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
+| 应用层 ACL：Deny 优先、缺省拒绝、策略缺失拒绝、跨租户拒绝 | `tests/security/test_policy_engine.py` | ✅ 通过 |
+| 混合权限父块不得整体恢复；未命中兄弟块受限即降级 | `tests/security/test_parent_acl.py` | ✅ 通过 |
+| 片段权限不得宽于父文档 | 同上 | ✅ 通过 |
+| 策略 JSON 解析严格性：未知键/维度/类型即报错 | 同上 + 数据库真实 jsonb 校验 | ✅ 通过 |
 | 跨租户 SELECT 返回零行 / 仅本租户 | `tests/security/test_tenant_isolation.py`（9 项） | ✅ 通过 |
 | 跨租户 UPDATE / DELETE 影响 0 行 | 同上 | ✅ 通过 |
 | 跨租户 INSERT 被 WITH CHECK 拒绝 | 同上 | ✅ 通过 |
@@ -126,10 +130,10 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 尚未完成（下一阶段）：
 
-- 混合权限父块的 ACL 恢复测试（`tests/security/test_parent_acl.py`）；
-- 应用层 Policy Engine 与检索域过滤（Phase 2 才有检索链路）；
+- 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；
 - 对象存储签名链接有效期与重放防护（Phase 2）；
-- 撤销后缓存与索引 generation 收敛验证（Phase 2）。
+- 撤销后缓存与索引 generation 收敛验证（Phase 2）；
+- 真实数据的金标准集与坏例回归（Phase 2，依赖 ADR-08）。
 
 P0 未全绿时不得宣告 Phase 0 完成，也不能用平均分掩盖单点失败。
 
