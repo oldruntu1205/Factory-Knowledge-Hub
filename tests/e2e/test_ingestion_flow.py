@@ -51,6 +51,7 @@ def _request(seed: dict[str, str], **overrides: Any) -> IngestionRequest:
         "owner_department": "tech",
         "classification": 1,
         "audience": "internal",
+        "required_scope": "internal_product",
         "acl_policy": AclPolicy.from_json({"allow": {"roles": ["staff"]}}),
         "actor_id": UUID(seed["user_a"]),
     }

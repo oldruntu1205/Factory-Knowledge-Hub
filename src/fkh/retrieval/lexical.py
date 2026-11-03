@@ -29,6 +29,9 @@ from fkh.authz.policy import AclPolicy, Decision, Subject, evaluate
 from fkh.domain.lexeme import QUERY_FUNCTION, segment_cjk
 
 # 分词器必须是写入 lexeme 时使用的同一个；换分词器要重建索引，否则永远匹配不上
+# 生成 lexeme 的分词器版本，对应 knowledge_chunks.lexeme_tokenizer_id。
+# 不要用 knowledge_chunks.tokenizer_id：那是切片 token 计数版本（approx-cjk-v1），
+# 两者混用会让过滤条件永远不成立，检索静默返回空。
 TOKENIZER_ID = "cjk-char-v1"
 
 OVERFETCH = 4
@@ -49,7 +52,7 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
  WHERE c.tenant_id = %(tenant)s
    AND c.lexeme @@ tq.q
    AND c.chunk_kind = 'child'
-   AND c.tokenizer_id = %(tokenizer)s
+   AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
    AND v.required_scope = %(scope)s
    AND ( (v.status = 'APPROVED_INTERNAL' AND v.audience = 'internal')
       OR (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public') )
@@ -107,7 +110,7 @@ class LexicalRetriever:
                 "ts_query": ts_query,
                 "tenant": self._tenant,
                 "scope": knowledge_scope,
-                "tokenizer": TOKENIZER_ID,
+                "lexeme_tokenizer": TOKENIZER_ID,
                 "limit": limit,
             },
         ).fetchall()

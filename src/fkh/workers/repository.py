@@ -82,6 +82,7 @@ class IngestionRepository:
         title: str,
         classification: int,
         audience: str,
+        required_scope: str,
         content_sha256: str,
         source_object_key: str,
     ) -> UUID:
@@ -92,8 +93,8 @@ class IngestionRepository:
                 row = self._conn.execute(
                     """INSERT INTO knowledge_versions
                          (tenant_id, document_id, version_no, title, classification, audience,
-                          status, content_sha256, source_object_key)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          required_scope, status, content_sha256, source_object_key)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        RETURNING id""",
                     (
                         self._tenant,
@@ -102,6 +103,7 @@ class IngestionRepository:
                         title,
                         classification,
                         audience,
+                        required_scope,
                         VersionStatus.RAW.value,
                         content_sha256,
                         source_object_key,
@@ -180,6 +182,7 @@ class IngestionRepository:
         acl_policy_id: UUID,
         index_generation: int,
         tokenizer_id: str,
+        lexeme_tokenizer_id: str,
         parser_id: str,
         language: str,
     ) -> tuple[int, int]:
@@ -193,6 +196,7 @@ class IngestionRepository:
                 acl_policy_id=acl_policy_id,
                 index_generation=index_generation,
                 tokenizer_id=tokenizer_id,
+                lexeme_tokenizer_id=lexeme_tokenizer_id,
                 parser_id=parser_id,
                 language=language,
             )
@@ -212,6 +216,7 @@ class IngestionRepository:
                 acl_policy_id=acl_policy_id,
                 index_generation=index_generation,
                 tokenizer_id=tokenizer_id,
+                lexeme_tokenizer_id=lexeme_tokenizer_id,
                 parser_id=parser_id,
                 language=language,
             )
@@ -227,14 +232,16 @@ class IngestionRepository:
         acl_policy_id: UUID,
         index_generation: int,
         tokenizer_id: str,
+        lexeme_tokenizer_id: str,
         parser_id: str,
         language: str,
     ) -> UUID:
         row = self._conn.execute(
             """INSERT INTO knowledge_chunks
                  (tenant_id, version_id, parent_chunk_id, chunk_kind, chunk_text, chunk_sha256,
-                  tokenizer_id, heading_path, locator, metadata, acl_policy_id, index_generation, lexeme)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  tokenizer_id, lexeme_tokenizer_id, heading_path, locator, metadata,
+                  acl_policy_id, index_generation, lexeme)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                        to_tsvector('simple', %s))
                RETURNING id""",
             (
@@ -245,6 +252,7 @@ class IngestionRepository:
                 chunk.text,
                 chunk.content_sha256,
                 tokenizer_id,
+                lexeme_tokenizer_id,
                 list(chunk.heading_path),
                 Jsonb(chunk.locator.to_json()),
                 Jsonb(

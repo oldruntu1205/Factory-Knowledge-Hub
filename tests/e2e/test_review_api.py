@@ -66,6 +66,7 @@ def api(pg_url: str, admin: psycopg.Connection[Any]) -> Iterator[dict[str, Any]]
         owner_department="tech",
         classification=0,
         audience="customer_public",
+        required_scope="customer_public",
         acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}}),
         actor_id=uuid.UUID(reviewer),
     )

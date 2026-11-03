@@ -110,8 +110,9 @@ def _chunk(
     row = admin.execute(
         """INSERT INTO knowledge_chunks
              (tenant_id, version_id, parent_chunk_id, chunk_kind, chunk_text, chunk_sha256,
-              tokenizer_id, heading_path, locator, acl_policy_id, index_generation, lexeme)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, ARRAY['第 1 章'], %s::jsonb, %s, 1,
+              tokenizer_id, lexeme_tokenizer_id, heading_path, locator, acl_policy_id,
+              index_generation, lexeme)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ARRAY['第 1 章'], %s::jsonb, %s, 1,
                    to_tsvector('simple', %s))
            RETURNING id""",
         (
@@ -121,6 +122,9 @@ def _chunk(
             kind,
             text,
             hashlib.sha256(text.encode()).hexdigest(),
+            # tokenizer_id = 切片 token 计数版本；lexeme_tokenizer_id = 倒排分词器版本。
+            # 两者混用会让检索的过滤条件永远不成立（见 0009 迁移说明）。
+            "approx-cjk-v1",
             tokenizer,
             psycopg.types.json.Jsonb(locator or {"block_index": 0, "page_start": 1}),
             acl_id,

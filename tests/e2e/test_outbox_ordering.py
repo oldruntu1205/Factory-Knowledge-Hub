@@ -45,6 +45,7 @@ def _ingest(conn: psycopg.Connection[Any], seed: dict[str, str]) -> UUID:
         owner_department="tech",
         classification=0,
         audience="customer_public",
+        required_scope="customer_public",
         acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}}),
         actor_id=UUID(seed["user_a"]),
     )

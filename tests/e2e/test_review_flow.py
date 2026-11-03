@@ -50,6 +50,7 @@ def _ingest(
         owner_department="tech",
         classification=classification,
         audience=audience,
+        required_scope=("customer_public" if audience == "customer_public" else "internal_product"),
         acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}}),
         actor_id=UUID(seed["user_a"]),
     )

@@ -20,6 +20,7 @@ from fkh.authz.policy import AclPolicy
 from fkh.domain.chunking.chunker import build_chunks
 from fkh.domain.chunking.tokenize import ApproxCjkTokenCounter, TokenCounter
 from fkh.domain.chunking.types import ChunkingConfig
+from fkh.domain.lexeme import TOKENIZER_ID as LEXEME_TOKENIZER_ID
 from fkh.domain.parsing.registry import parse_document
 from fkh.domain.state_machine import VersionStatus
 from fkh.workers.repository import DuplicateContentError, IngestionRepository
@@ -39,6 +40,9 @@ class IngestionRequest:
     owner_department: str
     classification: int
     audience: str
+    # 读取该版本所需的知识范围。0007 明确不设默认值：'internal' 无法区分
+    # 产品资料与培训材料，自动填 internal_product 会让培训内容被产品岗读到。
+    required_scope: str
     acl_policy: AclPolicy
     actor_id: UUID
     source_object_key: str | None = None
@@ -50,6 +54,15 @@ class IngestionRequest:
             raise ValueError(f"classification 必须在 0..4 之间，当前为 {self.classification}")
         if self.audience not in VALID_AUDIENCES:
             raise ValueError(f"audience 必须是 {sorted(VALID_AUDIENCES)} 之一")
+        if self.audience == "customer_public" and self.required_scope != "customer_public":
+            raise ValueError("audience=customer_public 时 required_scope 必须为 customer_public")
+        if self.audience == "internal" and self.required_scope not in {
+            "internal_product",
+            "internal_training",
+        }:
+            raise ValueError(
+                "audience=internal 时 required_scope 必须是 internal_product 或 internal_training"
+            )
         if not self.content:
             raise ValueError("content 为空，拒绝入库")
 
@@ -121,6 +134,7 @@ def ingest_document(
             title=request.title,
             classification=request.classification,
             audience=request.audience,
+            required_scope=request.required_scope,
             content_sha256=parsed.source_sha256,
             source_object_key=object_key,
         )
@@ -133,6 +147,9 @@ def ingest_document(
             acl_policy_id=acl_id,
             index_generation=generation,
             tokenizer_id=chunking.tokenizer_id,
+            # 切片 token 计数版本与 lexeme 分词器版本是两件事：
+            # 前者决定切片边界，后者决定倒排能否与查询侧匹配
+            lexeme_tokenizer_id=LEXEME_TOKENIZER_ID,
             parser_id=parsed.parser_id,
             language=request.language,
         )
