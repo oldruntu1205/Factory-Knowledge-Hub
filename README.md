@@ -28,10 +28,12 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 .
 ├── src/fkh/                 # 唯一 Python 包（apps/* 与 packages/* 的合并实现）
 │   ├── api/                 # knowledge-api：路由、依赖、错误映射
-│   ├── authz/               # OIDC 校验、主体上下文、Policy/ACL 判定
-│   ├── domain/              # 状态机、版本、审批、不变量
-│   ├── retrieval/           # Dense/Lexical、RRF、rerank、父块恢复
-│   ├── gateway/             # LLM Gateway 分级路由与脱敏
+│   ├── authz/               # OIDC 校验、ACL 判定、父块恢复
+│   ├── domain/              # 领域逻辑
+│   │   ├── parsing/         # PDF/DOCX/HTML/Markdown/CSV 解析与复核标记
+│   │   └── chunking/        # 父子切片、token 近似计数
+│   ├── retrieval/           # Dense/Lexical、RRF、rerank（Phase 2）
+│   ├── gateway/             # LLM Gateway 分级路由与脱敏（Phase 2）
 │   ├── observability/       # trace、审计、指标
 │   ├── workers/             # ingestion / interview / evaluation
 │   └── mcp/                 # 受控 MCP 适配（只读工具）
@@ -64,7 +66,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 93 项：契约 + ACL 判定 + 父块隔离 + 跨租户 + 状态机 + 培训规则
+uv run pytest -q              # 129 项：契约 + ACL + 跨租户 + 状态机 + 培训 + 解析 + 切片
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -103,7 +105,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 93 项，其中 31 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 129 项，其中 31 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -127,9 +129,29 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | API 认证 / 提权 / 未实现 / 错误格式 | `tests/contract/test_api_contract.py` | ✅ 通过 |
 | OpenAPI 与代码路由完全一致 | 同上 | ✅ 通过 |
 | 迁移可重放、可回滚、可重建 | `migrations/apply.py --rollback 5` 实测 | ✅ 通过 |
+| 解析：表格列名/单位保留、无表头与合并单元格被标记 | `tests/parsing/`（22 项） | ✅ 通过 |
+| 切片：不超 token 上限、不跨分组混切、child 指回 parent | `tests/chunking/`（15 项） | ✅ 通过 |
+
+## 7. 解析与切片（Phase 1 已完成部分）
+
+已支持 Markdown / CSV / HTML / DOCX / 可提取文本的 PDF，产出带页码、块序号、坐标与
+标题路径的块序列，再切成父子切片。
+
+三条实现取舍值得记住：
+
+1. **PDF 用 pdfplumber 而非 PyMuPDF**。后者是 AGPL-3.0，闭源商业交付会带来许可传染风险；
+   pdfplumber 在 MIT 下同样能给坐标与表格。
+2. **扫描件不静默降级**。没有 OCR 就标记 `PARSER_FALLBACK` 进人工复核队列，
+   而不是把空文本当作"解析成功"。OCR 引擎待 ADR-05 签署。
+3. **parent 按一二级标题分组，不按所有标题切**。实测同一份契约文档，逐标题切会产生
+   59 个 parent、中位数 132 token；按一二级分组后为 17 个、中位数 502 token。
+
+完整规格、已知限制与实测数据见 [`docs/SPEC/parsing-and-chunking.md`](./docs/SPEC/parsing-and-chunking.md)。
 
 尚未完成（下一阶段）：
 
+- OCR 通道（阻塞于 ADR-05）；
+- 真实 tokenizer 替换近似计数（阻塞于 ADR-04/06 的模型选择）；
 - 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；
 - 对象存储签名链接有效期与重放防护（Phase 2）；
 - 撤销后缓存与索引 generation 收敛验证（Phase 2）；
