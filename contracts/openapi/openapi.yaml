@@ -362,21 +362,64 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [role_code, title]
+              required: [role_code, role_name, title]
               properties:
-                role_code: { type: string }
-                title: { type: string }
+                role_code: { type: string, minLength: 1, maxLength: 64 }
+                role_name: { type: string, minLength: 1, maxLength: 128 }
+                title: { type: string, minLength: 1, maxLength: 200 }
+                knowledge_version_ids:
+                  type: array
+                  maxItems: 20
+                  items: { type: string }
       responses:
-        "201": { description: 课程草稿已创建 }
+        "200": { description: 课程草稿（status=DRAFT） }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
+        "409": { description: 业务规则不满足 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /v1/training/courses/{course_id}/questions:
+    post:
+      tags: [training]
+      summary: 新增题目（内部端点）
+      description: 题目绑定创建时的课程版本；同一版本内题目不可变。
+      x-internal: true
+      parameters:
+        - name: course_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [question_type, prompt]
+              properties:
+                question_type:
+                  type: string
+                  enum: [SINGLE_CHOICE, MULTI_CHOICE, TRUE_FALSE, SHORT_ANSWER]
+                prompt: { type: string, minLength: 1, maxLength: 1000 }
+                answer_key: { type: object }
+                evidence_refs:
+                  type: array
+                  maxItems: 10
+                  items: { type: object }
+                status: { type: string, enum: [DRAFT, APPROVED], default: APPROVED }
+      responses:
+        "200": { description: 题目已创建 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: 课程不存在或状态不允许 }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /v1/training/courses/{course_id}/publish:
     post:
       tags: [training]
       summary: 发布课程
-      description: 必须绑定至少一个已审批知识版本；校验题库状态后发布。
+      description: |
+        必须绑定至少一个已审批知识版本（数据库触发器强制）；存在草稿题目时拒绝。
+        发布时 version 自增、published_at 由数据库填写。
       parameters:
         - name: course_id
           in: path
@@ -386,30 +429,39 @@ paths:
         "200": { description: 已发布 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
+        "409": { description: 缺少知识源、源未审批或存在草稿题目 }
   /v1/training/assignments:
     post:
       tags: [training]
       summary: 按岗位分配课程
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+      description: 只有已发布课程可分配；同一课程对同一学员重复分配返回既有任务。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [course_id, learner_subject_id]
+              properties:
+                course_id: { type: string }
+                learner_subject_id: { type: string, minLength: 1, maxLength: 200 }
+                cohort_id: { type: [string, "null"], maxLength: 64 }
       responses:
-        "201": { description: 已分配 }
+        "200": { description: 分配结果 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
+        "409": { description: 课程未发布或不存在 }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /v1/training/me/assignments:
     get:
       tags: [training]
-      summary: 仅返回本人任务
+      summary: 查询本人学习任务
+      description: 学员身份取自令牌，不接受查询参数指定他人。
       responses:
-        "200": { description: 本人学习任务列表 }
+        "200": { description: 本人任务列表 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
   /v1/training/ask:
     post:
       tags: [training]
@@ -447,15 +499,29 @@ paths:
     post:
       tags: [training]
       summary: 提交测验
-      description: 服务端按已批准题库版本判分，客户端提交的分数一律忽略。
+      description: |
+        服务端按已审批题库版本判分，请求体不含分数字段（多传即 422）。
+        幂等键重复提交返回既有成绩，不重复判分。
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assignment_id, responses, idempotency_key]
+              properties:
+                assignment_id: { type: string }
+                responses: { type: object }
+                idempotency_key: { type: string, minLength: 8, maxLength: 128 }
       responses:
-        "201": { description: 已收卷并判分 }
+        "200": { description: 判分结果 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
+        "409": { description: 非本人任务或任务不存在 }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /v1/training/practical-signoffs:
     post:
       tags: [training]
@@ -481,7 +547,7 @@ paths:
     get:
       tags: [training]
       summary: 学习进度
-      description: 仅允许本人或授权范围（导师/管理员）读取。
+      description: 只能查本人任务；他人任务与不存在同样返回 403。
       parameters:
         - name: assignment_id
           in: path
@@ -491,8 +557,6 @@ paths:
         "200": { description: 进度详情 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
-
 components:
   schemas:
     EvidenceResponse:

@@ -23,6 +23,7 @@ from fkh.api.routes_context import router as context_router
 from fkh.api.routes_evidence import router as evidence_router
 from fkh.api.routes_review import router as review_router
 from fkh.api.routes_search import router as search_router
+from fkh.api.routes_training import router as training_router
 from fkh.api.security import PrincipalContext, PrincipalDep, require
 from fkh.config import Settings, get_settings
 
@@ -33,14 +34,8 @@ CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("GET", "/v1/interviews/{interview_id}", "interview.read", "查询转写与草稿状态"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
     ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
-    ("POST", "/v1/training/courses", "training_admin", "创建课程草稿"),
-    ("POST", "/v1/training/courses/{course_id}/publish", "training_publisher", "发布课程"),
-    ("POST", "/v1/training/assignments", "training_admin", "按岗位分配课程"),
-    ("GET", "/v1/training/me/assignments", "learner", "查询本人学习任务"),
-    ("POST", "/v1/training/attempts", "learner", "提交测验"),
     ("POST", "/v1/training/practical-signoffs", "mentor", "导师实操签核"),
     ("POST", "/v1/training/feedback", "learner", "培训反馈"),
-    ("GET", "/v1/training/assignments/{assignment_id}/progress", "learner", "学习进度"),
 ]
 
 
@@ -151,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _register_contract_routes(app)
     app.include_router(review_router)
     app.include_router(context_router)
+    app.include_router(training_router)
     app.include_router(evidence_router)
     app.include_router(search_router)
 

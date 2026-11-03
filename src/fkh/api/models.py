@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -107,3 +107,52 @@ class ContextRequest(BaseModel):
         if not value.strip():
             raise ValueError("query 不能为空白")
         return value
+
+
+class CourseCreateRequest(BaseModel):
+    """创建课程草稿。岗位按 code 取或建，避免调用方先查岗位 id。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role_code: str = Field(min_length=1, max_length=64)
+    role_name: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=200)
+    knowledge_version_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class QuestionCreateRequest(BaseModel):
+    """新增题目。默认以 APPROVED 入库是没有默认值的替代：
+
+    题目本身没有审批流时，DRAFT 状态会让课程永远无法发布。这里把"是否已审"
+    交给调用方显式声明，缺省视为已审，便于课程发布校验把草稿题挡在门外。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    question_type: Literal["SINGLE_CHOICE", "MULTI_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"]
+    prompt: str = Field(min_length=1, max_length=1000)
+    answer_key: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    status: Literal["DRAFT", "APPROVED"] = "APPROVED"
+
+
+class AssignmentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: str
+    learner_subject_id: str = Field(min_length=1, max_length=200)
+    cohort_id: str | None = Field(default=None, max_length=64)
+
+
+class AttemptSubmitRequest(BaseModel):
+    """提交答卷。
+
+    刻意**不含** score 字段：extra="forbid" 会让多传的分数直接被拒，
+    客户端没有机会影响成绩。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    responses: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=8, max_length=128)
