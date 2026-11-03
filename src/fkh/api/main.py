@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, install_error_handlers
 from fkh.api.models import AnswerRequest, TrainingAskRequest
+from fkh.api.routes_evidence import router as evidence_router
 from fkh.api.routes_review import router as review_router
 from fkh.api.security import PrincipalContext, PrincipalDep, require
 from fkh.config import Settings, get_settings
@@ -30,7 +31,6 @@ CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("GET", "/v1/interviews/{interview_id}", "interview.read", "查询转写与草稿状态"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
     ("POST", "/v1/knowledge/search", "knowledge.search", "权限过滤检索"),
-    ("GET", "/v1/evidence/{evidence_id}", "evidence.read", "受控证据定位"),
     ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
     ("POST", "/v1/training/courses", "training_admin", "创建课程草稿"),
     ("POST", "/v1/training/courses/{course_id}/publish", "training_publisher", "发布课程"),
@@ -149,6 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_contract_routes(app)
     app.include_router(review_router)
+    app.include_router(evidence_router)
 
     app.add_api_route(
         "/v1/knowledge/answer",

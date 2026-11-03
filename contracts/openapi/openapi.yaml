@@ -269,17 +269,24 @@ paths:
     get:
       tags: [evidence]
       summary: 受控证据定位
-      description: 返回短期签名链接，不暴露私有存储路径；链接失效后不得再可读。
+      description: >-
+        返回受控证据的定位与正文。ADR-01 未签署、无对象存储，本版本固定返回
+        signed_url=null 与 signed_url_state=NOT_CONFIGURED：定位能力可用，签名链接能力未交付。
+        不存在、跨租户、状态不可见、scope 不符、ACL 拒绝一律 403，body 不携带资源元数据。
       parameters:
         - name: evidence_id
           in: path
           required: true
           schema: { type: string }
       responses:
-        "200": { description: 证据定位与签名链接 }
+        "200":
+          description: 证据定位与正文
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidenceResponse"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
 
   /v1/feedback:
     post:
@@ -446,6 +453,9 @@ paths:
         "501": { $ref: "#/components/responses/NotImplemented" }
 
 components:
+  schemas:
+    EvidenceResponse:
+      $ref: "../schema/evidence_response.json"
   securitySchemes:
     bearerAuth:
       type: http

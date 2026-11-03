@@ -19,14 +19,14 @@
 |---|---|---|---|
 | A · 采集与治理 | 解析、切片、入库、审核发布、ACL | 已完成，等待草稿终止裁决 | `16248f2` `6803710` `82eec2e` |
 | B · 事件投递 | outbox 租约、令牌、死信、重放 | 已完成，告警未接线 | `b93a61b` |
-| C · 证据定位 | `GET /v1/evidence/{id}` | 进行中，未提交 | 工作区 `domain/evidence.py` |
+| C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | 工作区 evidence 切片（0007） |
 
 ## 3. 怎么跑
 
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups
-uv run pytest -q                 # 235 项，本地自动起 pgserver
+uv run pytest -q                 # 257 项，本地自动起 pgserver
 uv run ruff check src tests migrations
 uv run mypy
 uv run uvicorn fkh.api.main:app --port 8000
@@ -67,7 +67,8 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0004 | 全表强制 RLS | 已应用 |
 | 0005 | 内容哈希唯一 | 已应用 |
 | 0006 | outbox 租约/令牌/死信 | 已应用 |
-| **0007** | **预留给草稿终止路径（待裁决）** | 占位 |
+| 0007 | 证据定位：required_scope + 访问审计 | 已应用（本机） |
+| **0008** | **预留给草稿终止路径（待裁决）** | 占位 |
 
 **已应用的迁移文件不得修改**：`migrations/apply.py` 对已应用文件做校验和比对，改动会被判为漂移并拒绝执行。
 
@@ -85,7 +86,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 事项 | 影响 | 文档 |
 |---|---|---|
 | `DRAFT` / `REVIEWED` 无终止路径 | 错误草稿永久滞留、版本号被占 | `docs/REVIEW-REQUEST-draft-termination.md` |
-| 证据定位的 ID 语义与 audience→scope 映射 | Lane C 正在实现 | `_evidence/l1_request_evidence_20261103.md` |
+| 证据定位的 ID 语义与 audience→scope 映射 | 已裁决：chunk id + 新增 `required_scope`（0007） | `docs/SPEC/evidence-locator.md` |
 | ADR-01 对象存储与区域 | 签名链接、备份位置 | 未启动 |
 | ADR-02 身份源 | 令牌 claim 结构（含 groups/departments） | 未启动 |
 | ADR-04/06 Embedding 模型 | 真实 tokenizer、向量维度 | 阻塞检索 |

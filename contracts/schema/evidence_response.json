@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/evidence_response.json",
+  "title": "EvidenceResponse",
+  "description": "GET /v1/evidence/{id} 的 200 响应。字段与 L1 判决（2026-11-03）逐条对应；signed_url 在 ADR-01 签署前固定为 null。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_id",
+    "knowledge_id",
+    "version_id",
+    "status",
+    "classification",
+    "audience",
+    "locator",
+    "heading_path",
+    "text",
+    "text_level",
+    "text_evidence_id",
+    "signed_url",
+    "signed_url_state",
+    "trace_id"
+  ],
+  "properties": {
+    "evidence_id": { "type": "string", "format": "uuid" },
+    "knowledge_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "所属知识文档 id（与 AnswerResponse.citations.knowledge_id 同义）"
+    },
+    "version_id": { "type": "string", "format": "uuid" },
+    "status": { "type": "string", "enum": ["APPROVED_INTERNAL", "PUBLISHED_PUBLIC"] },
+    "classification": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "audience": { "type": "string", "enum": ["internal", "customer_public"] },
+    "locator": {
+      "type": ["object", "null"],
+      "description": "只含白名单定位字段（页码/块序号/坐标等），不含存储路径或哈希"
+    },
+    "heading_path": { "type": ["array", "null"], "items": { "type": "string" } },
+    "text": { "type": "string", "minLength": 1 },
+    "text_level": {
+      "type": "string",
+      "enum": ["CHILD", "PARENT"],
+      "description": "PARENT 表示返回的是父块全文，需 parent 与其下全部 child 均通过同一套检查"
+    },
+    "text_evidence_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "实际提供正文的块 id；CHILD 时等于 evidence_id，PARENT 时为父块 id"
+    },
+    "signed_url": { "type": ["string", "null"] },
+    "signed_url_state": { "type": "string", "enum": ["NOT_CONFIGURED", "AVAILABLE"] },
+    "trace_id": { "type": "string", "minLength": 1 }
+  }
+}

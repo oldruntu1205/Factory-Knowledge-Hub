@@ -97,6 +97,7 @@ for f in migrations/0*.sql; do psql "$FKH_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$
 | `0004_rls.sql` | 全表 RLS enable + force 与策略 | `rollback/0004_down.sql` |
 | `0005_content_uniqueness.sql` | 同文档内容哈希唯一约束 | `rollback/0005_down.sql` |
 | `0006_outbox_delivery.sql` | outbox 租约 / 令牌 / 重试 / 死信 / 顺序键 + 重放审计表 | `rollback/0006_down.sql` |
+| `0007_evidence_access.sql` | 证据定位 `required_scope` + 访问审计表 | `rollback/0007_down.sql` |
 
 L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`0002` 中落实：
 
@@ -109,7 +110,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 229 项，其中 130 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 257 项，其中 158 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -142,6 +143,9 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | outbox：租约/令牌互斥、过期后旧 worker 确认影响 0 行、业务角色零行可见 | `tests/workers/test_outbox_relay.py`（24 项） | ✅ 通过 |
 | outbox：同聚合按 (版本, ordinal) 串行，退避/死信阻塞后继，第 8 次失败进死信 | 同上 | ✅ 通过 |
 | outbox：发布后撤销产生两条有序事件，顺序键不被唯一约束拒绝 | `tests/e2e/test_outbox_ordering.py` | ✅ 通过 |
+| 证据定位：五种拒绝同码同 body、状态/组合/scope/ACL 全链路 | `tests/e2e/test_evidence_api.py`（22 项） | ✅ 通过 |
+| 证据定位：直接请求 parent 不得绕过子块可见性；locator 不泄露存储路径 | 同上 | ✅ 通过 |
+| 证据定位：成功与拒绝均落访问审计，跨租户不可读，审计失败不返回正文 | 同上 | ✅ 通过 |
 
 ## 7. 解析与切片（Phase 1 已完成部分）
 
@@ -164,11 +168,13 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 - outbox 投递器已落地（`src/fkh/workers/outbox_relay.py` + `0006`，规格见
   [`docs/SPEC/outbox-delivery.md`](./docs/SPEC/outbox-delivery.md)）；仍未做：消费者、
   告警通道接线、上游真实 trace 贯通、运维页面；
+- 证据定位已落地（`GET /v1/evidence/{id}` + `0007`，规格见
+  [`docs/SPEC/evidence-locator.md`](./docs/SPEC/evidence-locator.md)）；仍未做：签名 URL（待 ADR-01）、
+  引用级独立失效、**存量版本 `required_scope` 赋值**（未赋值的版本一律 403，属有意 fail-closed）；
 - 草稿终止路径（`DRAFT` 无出口，待 L1 裁决，见 `docs/REVIEW-REQUEST-draft-termination.md`）；
 - OCR 通道（阻塞于 ADR-05）；
 - 真实 tokenizer 替换近似计数（阻塞于 ADR-04/06 的模型选择）；
 - 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；
-- 对象存储签名链接有效期与重放防护（Phase 2）；
 - 撤销后缓存与索引 generation 收敛验证（Phase 2）；
 - 真实数据的金标准集与坏例回归（Phase 2，依赖 ADR-08）。
 
