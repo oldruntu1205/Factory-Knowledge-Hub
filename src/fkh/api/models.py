@@ -42,3 +42,24 @@ class TrainingAskRequest(BaseModel):
     assignment_id: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=2000)
     language: Language
+
+
+class ReviewRequest(BaseModel):
+    """技术审核动作。PASS 提交审核，REJECT 退回草稿，APPROVE_INTERNAL 批准内部可用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["PASS", "REJECT", "APPROVE_INTERNAL"]
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class PublishRequest(BaseModel):
+    """发布请求。audience=customer_public 时额外要求 knowledge.publish_public 权限。
+
+    请求体里不出现审批人字段：公开审批人取自令牌，客户端无法指定"由谁批准"。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    audience: Literal["internal", "customer_public"]
+    reason: str | None = Field(default=None, max_length=500)

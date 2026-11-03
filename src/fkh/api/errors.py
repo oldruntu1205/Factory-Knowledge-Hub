@@ -21,6 +21,7 @@ class ErrorCode(StrEnum):
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     VERSION_CONFLICT = "VERSION_CONFLICT"
     RATE_LIMITED = "RATE_LIMITED"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -32,6 +33,7 @@ _ERROR_TABLE: dict[ErrorCode, tuple[int, str]] = {
     ErrorCode.NOT_IMPLEMENTED: (501, "Endpoint is not implemented in this phase"),
     ErrorCode.VERSION_CONFLICT: (409, "Resource version conflict"),
     ErrorCode.RATE_LIMITED: (429, "Too many requests"),
+    ErrorCode.SERVICE_UNAVAILABLE: (503, "Service dependency unavailable"),
     ErrorCode.INTERNAL_ERROR: (500, "Internal error"),
 }
 

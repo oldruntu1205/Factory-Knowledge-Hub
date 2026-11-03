@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import itertools
+import uuid
 
 import psycopg
 import pytest
@@ -55,7 +56,7 @@ def test_publish_requires_two_distinct_approvers(admin: psycopg.Connection, seed
 
 def test_publish_rejects_non_public_classification(admin: psycopg.Connection, seed: dict[str, str]) -> None:
     """classification=C0 才可公开；C1 即使双签也不得进入外部可见状态。"""
-    other = create_principal(admin, seed["tenant_a"], "public-approver@example.test")
+    other = create_principal(admin, seed["tenant_a"], f"public-approver-{uuid.uuid4().hex[:8]}@example.test")
     version = _fresh_version(
         admin,
         seed,
@@ -117,7 +118,7 @@ def test_revoked_is_terminal(admin: psycopg.Connection, seed: dict[str, str]) ->
 
 def test_full_approval_chain_succeeds(admin: psycopg.Connection, seed: dict[str, str]) -> None:
     """正向链路：证明状态机不是把所有迁移都拒了。"""
-    approver = create_principal(admin, seed["tenant_a"], "public-approver-chain@example.test")
+    approver = create_principal(admin, seed["tenant_a"], f"public-approver-{uuid.uuid4().hex[:8]}@example.test")
     version = _fresh_version(admin, seed, status="RAW", classification=0, audience="customer_public")
 
     admin.execute("UPDATE knowledge_versions SET status = 'DRAFT' WHERE id = %s", (version,))

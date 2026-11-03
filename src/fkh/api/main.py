@@ -8,15 +8,18 @@ Phase 0 的定位：把所有契约端点注册出来、把认证与错误格式
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import psycopg
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, install_error_handlers
 from fkh.api.models import AnswerRequest, TrainingAskRequest
+from fkh.api.routes_review import router as review_router
 from fkh.api.security import PrincipalContext, PrincipalDep, require
 from fkh.config import Settings, get_settings
 
@@ -26,9 +29,6 @@ CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("POST", "/v1/interviews", "interview.create", "建立语音访谈任务"),
     ("GET", "/v1/interviews/{interview_id}", "interview.read", "查询转写与草稿状态"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
-    ("POST", "/v1/knowledge/{knowledge_id}/review", "knowledge.review", "技术审核"),
-    ("POST", "/v1/knowledge/{knowledge_id}/publish", "knowledge.publish", "内部发布"),
-    ("POST", "/v1/knowledge/{knowledge_id}/revoke", "knowledge.revoke", "撤销知识与发布"),
     ("POST", "/v1/knowledge/search", "knowledge.search", "权限过滤检索"),
     ("GET", "/v1/evidence/{evidence_id}", "evidence.read", "受控证据定位"),
     ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
@@ -85,13 +85,27 @@ async def _training_ask(request: Request, payload: TrainingAskRequest, context: 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # 数据库未配置时不建池，业务端点统一返回 503；
+        # 配置了却连不上则直接启动失败，不允许"看起来健康但什么都不通"。
+        pool = create_pool(settings.database_url) if settings.database_url else None
+        app.state.pool = pool
+        try:
+            yield
+        finally:
+            if pool is not None:
+                pool.close()
+
     app = FastAPI(
         title="Factory Knowledge Hub · knowledge-api",
         version="0.1.0",
         description=(
-            "受控知识治理与可引用 RAG。Phase 0 仅提供健康探针与契约端点，"
-            "业务端点返回 501；契约以 contracts/openapi/openapi.yaml 为单一来源。"
+            "受控知识治理与可引用 RAG。审核/发布/撤销已可用；检索与问答在 Phase 2 接入。"
+            "契约以 contracts/openapi/openapi.yaml 为单一来源。"
         ),
+        lifespan=lifespan,
     )
 
     @app.middleware("http")
@@ -134,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(status_code=200, content={"status": "ok", "checks": {"database": "ok"}})
 
     _register_contract_routes(app)
+    app.include_router(review_router)
 
     app.add_api_route(
         "/v1/knowledge/answer",

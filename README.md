@@ -29,7 +29,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ├── src/fkh/                 # 唯一 Python 包（apps/* 与 packages/* 的合并实现）
 │   ├── api/                 # knowledge-api：路由、依赖、错误映射
 │   ├── authz/               # OIDC 校验、ACL 判定、父块恢复
-│   ├── domain/              # 领域逻辑
+│   ├── domain/              # 领域逻辑（状态机、审核发布、分词）
 │   │   ├── parsing/         # PDF/DOCX/HTML/Markdown/CSV 解析与复核标记
 │   │   └── chunking/        # 父子切片、token 近似计数
 │   ├── retrieval/           # Dense/Lexical、RRF、rerank（Phase 2）
@@ -66,7 +66,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 186 项：契约 + ACL + 状态机 + 解析 + 切片 + 入库端到端
+uv run pytest -q              # 204 项：契约 + ACL + 状态机 + 解析 + 切片 + 入库 + 审核发布
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -106,7 +106,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 186 项，其中 87 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 204 项，其中 105 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -134,6 +134,8 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | 切片：不超 token 上限、不跨分组混切、child 指回 parent | `tests/chunking/`（15 项） | ✅ 通过 |
 | 状态机：应用层与数据库在 42 个迁移组合上完全一致 | `tests/security/test_state_machine_parity.py` | ✅ 通过 |
 | 入库：版本与审计、父子引用、中文检索、重复内容、跨租户 | `tests/e2e/test_ingestion_flow.py`（10 项） | ✅ 通过 |
+| 审核：全链路、双签拒绝、C1 不得公开、撤销即时生效 | `tests/e2e/test_review_flow.py`（10 项） | ✅ 通过 |
+| 审核 API：权限分层、公开审批额外权限、错误码不泄露存在性 | `tests/e2e/test_review_api.py`（8 项） | ✅ 通过 |
 
 ## 7. 解析与切片（Phase 1 已完成部分）
 
@@ -153,8 +155,8 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 尚未完成（下一阶段）：
 
-- 审核与发布 API（状态机与仓储已就绪，`/v1/knowledge/{id}/review|publish|revoke` 仍返回 501）；
-- outbox 事件发布（`knowledge.version.published.v1` 等，与索引切换一起做）；
+- outbox 事件投递（事件已写入表，尚无发布器与消费者）；
+- 草稿终止路径（`DRAFT` 无出口，待 L1 裁决，见 `docs/REVIEW-REQUEST-draft-termination.md`）；
 - OCR 通道（阻塞于 ADR-05）；
 - 真实 tokenizer 替换近似计数（阻塞于 ADR-04/06 的模型选择）；
 - 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；

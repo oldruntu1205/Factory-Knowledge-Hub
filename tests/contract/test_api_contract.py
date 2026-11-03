@@ -18,7 +18,7 @@ import yaml
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
-from fkh.api.main import CONTRACT_ROUTES, create_app
+from fkh.api.main import create_app
 from fkh.config import Settings
 
 pytestmark = [pytest.mark.contract]
@@ -142,32 +142,50 @@ def test_trace_header_echoed(client: TestClient) -> None:
     assert response.headers["X-Trace-Id"] == "trace-fixed-1"
 
 
+HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+
+
+def _registered_v1() -> set[tuple[str, str]]:
+    """从应用实际暴露的 OpenAPI 取 v1 端点。
+
+    不用 app.routes 遍历：FastAPI 会把 include_router 的路由折叠成懒加载对象，
+    app.routes 里看不到子路由，据此断言会漏掉整块已实现的端点。
+    动态读取而不是维护常量清单——手工清单迟早会忘记同步。
+    """
+    app = create_app(Settings(jwt_secret=SECRET))
+    return {
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        if path.startswith("/v1/")
+        for method in operations
+        if method.lower() in HTTP_METHODS
+    }
+
+
+def _declared_v1(spec: dict[str, Any]) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for path, operations in spec["paths"].items():
+        if not path.startswith("/v1/"):
+            continue
+        for method in operations:
+            if method.lower() in HTTP_METHODS:
+                pairs.add((method.upper(), path))
+    return pairs
+
+
 def test_openapi_matches_registered_routes() -> None:
     spec = yaml.safe_load(OPENAPI.read_text(encoding="utf-8"))
-    declared = spec["paths"]
-    expected = {(method, path) for method, path, _scope, _summary in CONTRACT_ROUTES}
-    expected |= {("POST", "/v1/knowledge/answer"), ("POST", "/v1/training/ask")}
+    registered = _registered_v1()
+    declared = _declared_v1(spec)
 
-    for method, path in expected:
-        assert path in declared, f"openapi.yaml 缺少路径 {path}"
-        assert method.lower() in declared[path], f"{path} 缺少方法 {method}"
-
-    business = {
-        (method, path)
-        for method, path in expected
-        if path.startswith("/v1/")
-    }
-    for method, path in business:
-        responses = declared[path][method.lower()]["responses"]
-        assert "401" in responses, f"{path} 未声明 401"
-        assert "501" in responses, f"{path} 未声明 501（Phase 0 应显式标注未实现）"
+    assert registered - declared == set(), f"代码有实现但契约未声明：{registered - declared}"
+    assert declared - registered == set(), f"契约有声明但代码未实现：{declared - registered}"
 
 
-def test_openapi_has_no_undocumented_v1_route() -> None:
+def test_business_routes_declare_auth_and_failure_modes() -> None:
     spec = yaml.safe_load(OPENAPI.read_text(encoding="utf-8"))
-    declared_v1 = {path for path in spec["paths"] if path.startswith("/v1/")}
-    registered_v1 = {path for _m, path, _s, _sum in CONTRACT_ROUTES} | {
-        "/v1/knowledge/answer",
-        "/v1/training/ask",
-    }
-    assert declared_v1 == registered_v1
+    for method, path in _registered_v1():
+        responses = spec["paths"][path][method.lower()]["responses"]
+        assert "401" in responses, f"{method} {path} 未声明 401"
+        # 已实现端点声明 200/201，未实现端点声明 501；两者必须至少有一个
+        assert {"200", "201", "501"} & set(responses), f"{method} {path} 未声明成功或未实现响应"

@@ -152,42 +152,73 @@ paths:
     post:
       tags: [knowledge]
       summary: 技术审核
+      description: |
+        PASS 提交审核（DRAFT→REVIEWED）；APPROVE_INTERNAL 批准内部可用（REVIEWED→APPROVED_INTERNAL）；
+        REJECT 退回草稿（REVIEWED/APPROVED_INTERNAL→DRAFT，同时清空审批人）。
       parameters:
         - $ref: "#/components/parameters/KnowledgeId"
-        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [PASS, REJECT, APPROVE_INTERNAL] }
+                reason: { type: [string, "null"], maxLength: 500 }
       responses:
-        "200": { description: 审核结果 }
+        "200": { description: 审核结果与新状态 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { description: 版本冲突 }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "409": { description: 当前状态不允许该操作 }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /v1/knowledge/{knowledge_id}/publish:
     post:
       tags: [knowledge]
       summary: 内部或对外发布
-      description: 对外发布要求 knowledge.publish_public 权限，且必须由独立于技术审批人的主体确认。
+      description: |
+        audience=internal：REVIEWED→APPROVED_INTERNAL；已批准则为幂等操作。
+        audience=customer_public：需要 knowledge.publish_public 权限，要求 C0 + customer_public，
+        且公开审批人必须区别于技术审批人——审批人取自令牌，请求体无法指定。
       parameters:
         - $ref: "#/components/parameters/KnowledgeId"
-        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [audience]
+              properties:
+                audience: { type: string, enum: [internal, customer_public] }
+                reason: { type: [string, "null"], maxLength: 500 }
       responses:
-        "200": { description: 发布结果 }
+        "200": { description: 发布结果与新状态 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { description: 版本冲突 }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "409": { description: 状态不符或双签主体相同 }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /v1/knowledge/{knowledge_id}/revoke:
     post:
       tags: [knowledge]
       summary: 同步撤销授权与发布
+      description: 撤销立即生效：状态一改，后续读取即拒绝该版本，不等索引异步清理。
       parameters:
         - $ref: "#/components/parameters/KnowledgeId"
+        - name: reason
+          in: query
+          required: false
+          schema: { type: string, maxLength: 500 }
       responses:
-        "200": { description: 已撤销，API 立即拒绝该版本 }
+        "200": { description: 已撤销 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "409": { description: 版本已撤销或状态不允许撤销 }
 
   /v1/knowledge/search:
     post:
