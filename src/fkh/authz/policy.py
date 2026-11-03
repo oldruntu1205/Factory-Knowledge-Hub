@@ -96,6 +96,31 @@ class AclPolicy:
             deny_subjects=deny["subjects"],
         )
 
+    # ---- 序列化 -----------------------------------------------------------
+    def to_json(self) -> dict[str, dict[str, list[str]]]:
+        """写回 acl_policies.policy_json 的规范形式。
+
+        空维度省略而不是写成空数组：省略表示"该维度不参与授权"，
+        空数组容易被误读成"无人可读"或"人人可读"。
+        """
+
+        allow = {
+            "roles": sorted(self.allow_roles),
+            "groups": sorted(self.allow_groups),
+            "departments": sorted(self.allow_departments),
+            "subjects": sorted(self.allow_subjects),
+        }
+        deny = {
+            "roles": sorted(self.deny_roles),
+            "groups": sorted(self.deny_groups),
+            "departments": sorted(self.deny_departments),
+            "subjects": sorted(self.deny_subjects),
+        }
+        return {
+            "allow": {key: value for key, value in allow.items() if value},
+            "deny": {key: value for key, value in deny.items() if value},
+        }
+
     # ---- 判定 -------------------------------------------------------------
     def _allow_sets(self) -> dict[str, frozenset[str]]:
         return {

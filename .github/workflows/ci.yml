@@ -54,7 +54,7 @@ jobs:
 
       - name: 迁移回滚与重建演练
         run: |
-          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --rollback 5
+          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --rollback 99
           uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --status
           uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL"
           uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --status

@@ -35,7 +35,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 │   ├── retrieval/           # Dense/Lexical、RRF、rerank（Phase 2）
 │   ├── gateway/             # LLM Gateway 分级路由与脱敏（Phase 2）
 │   ├── observability/       # trace、审计、指标
-│   ├── workers/             # ingestion / interview / evaluation
+│   ├── workers/             # ingestion 入库编排与仓储（interview/evaluation 待建）
 │   └── mcp/                 # 受控 MCP 适配（只读工具）
 ├── contracts/               # OpenAPI 3.1、JSON Schema、事件 Schema（契约单一来源）
 ├── migrations/              # 可重放 SQL 迁移 + 回滚脚本
@@ -66,7 +66,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 129 项：契约 + ACL + 跨租户 + 状态机 + 培训 + 解析 + 切片
+uv run pytest -q              # 186 项：契约 + ACL + 状态机 + 解析 + 切片 + 入库端到端
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -93,6 +93,7 @@ for f in migrations/0*.sql; do psql "$FKH_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$
 | `0002_vector_index.sql` | pgvector 列与 HNSW/GIN 索引 | `rollback/0002_down.sql` |
 | `0003_training.sql` | 新人培训增量表 | `rollback/0003_down.sql` |
 | `0004_rls.sql` | 全表 RLS enable + force 与策略 | `rollback/0004_down.sql` |
+| `0005_content_uniqueness.sql` | 同文档内容哈希唯一约束 | `rollback/0005_down.sql` |
 
 L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`0002` 中落实：
 
@@ -105,7 +106,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 129 项，其中 31 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 186 项，其中 87 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -131,6 +132,8 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | 迁移可重放、可回滚、可重建 | `migrations/apply.py --rollback 5` 实测 | ✅ 通过 |
 | 解析：表格列名/单位保留、无表头与合并单元格被标记 | `tests/parsing/`（22 项） | ✅ 通过 |
 | 切片：不超 token 上限、不跨分组混切、child 指回 parent | `tests/chunking/`（15 项） | ✅ 通过 |
+| 状态机：应用层与数据库在 42 个迁移组合上完全一致 | `tests/security/test_state_machine_parity.py` | ✅ 通过 |
+| 入库：版本与审计、父子引用、中文检索、重复内容、跨租户 | `tests/e2e/test_ingestion_flow.py`（10 项） | ✅ 通过 |
 
 ## 7. 解析与切片（Phase 1 已完成部分）
 
@@ -150,6 +153,8 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 尚未完成（下一阶段）：
 
+- 审核与发布 API（状态机与仓储已就绪，`/v1/knowledge/{id}/review|publish|revoke` 仍返回 501）；
+- outbox 事件发布（`knowledge.version.published.v1` 等，与索引切换一起做）；
 - OCR 通道（阻塞于 ADR-05）；
 - 真实 tokenizer 替换近似计数（阻塞于 ADR-04/06 的模型选择）；
 - 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；
