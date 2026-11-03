@@ -93,3 +93,61 @@ tests/e2e/test_review_flow.py::test_draft_cannot_be_revoked_pending_adr
 - 生产环境不得让草稿长期堆积。运营侧的处理方式是：上传错误时用**新版本**覆盖正确内容，
   旧草稿留在 DRAFT 状态并在后台列表标注，不对外可见。
 - 该约定写进 `docs/runbooks/`，上线前必须由业务负责人确认可接受。
+
+---
+
+## 附：可直接投喂的审查提示词
+
+> 以下内容可整段复制给外部审查方（ChatGPT / 架构评审人），无需额外上下文。
+
+```text
+你是制造企业知识管理系统的架构评审人。请审查一个状态机缺口，并给出裁决建议。
+
+【背景】
+系统是一个企业知识中枢，知识版本有 7 个状态：
+RAW → DRAFT → REVIEWED → APPROVED_INTERNAL → PUBLISHED_PUBLIC
+以及 SUPERSEDED、REVOKED。
+业务约束：
+- 知识分 C0（可公开）到 C4（核心机密）五级，只有 C0 且 audience=customer_public 才能对外发布；
+- 对外发布必须两个不同主体分别批准（技术审批 + 公开审批），不允许同一人双签；
+- 版本内容不可变，修改产生新版本；
+- 撤销（REVOKED）要求立即生效，不等索引异步清理。
+
+【当前允许的状态迁移】
+RAW → DRAFT
+DRAFT → REVIEWED
+REVIEWED → APPROVED_INTERNAL
+REVIEWED → DRAFT（退回）
+APPROVED_INTERNAL → DRAFT（退回）
+APPROVED_INTERNAL → PUBLISHED_PUBLIC
+APPROVED_INTERNAL → SUPERSEDED
+APPROVED_INTERNAL → REVOKED
+PUBLISHED_PUBLIC → SUPERSEDED
+PUBLISHED_PUBLIC → REVOKED
+SUPERSEDED → REVOKED
+
+【问题】
+DRAFT 与 REVIEWED 都没有通往 REVOKED 或任何终止状态的路径。
+后果：
+1. 上传错文件（拿错型号、传了其他客户的资料）后，这份草稿永久留在库里；
+2. version_no 被占用并持续递增，后续版本号与实物文档对不上；
+3. 切片仍在索引表中，只是状态不是 APPROVED，靠检索过滤挡住，但存储与统计开销仍在；
+4. 审核队列堆积永远不会处理的草稿。
+
+【三个候选方案】
+A. 允许 DRAFT → REVOKED，复用撤销语义。
+   改动最小，但 REVOKED 会同时表示"曾发布后被撤回"和"从未发布只是写错"，
+   审计上无法回答"这份内容是否曾经对外可见"。
+B. 新增 DISCARDED 状态，语义为"从未发布、主动作废"，与 REVOKED 区分。
+   需要新状态、新事件、检索过滤、培训课程联动，改动面最大。
+C. 加软删除列 discarded_at，不动状态机，所有查询追加条件。
+   状态与"是否作废"变成两个维度，容易在某个查询里漏掉条件。
+
+【请输出】
+1. 推荐方案及理由，明确指出你否决其他方案的关键原因；
+2. 若推荐 B，请说明 DISCARDED 是否也应允许从 RAW 直接进入；
+3. 被作废版本引用的下游对象（培训课程）应如何处理；
+4. 版本号是否应该回收，为什么；
+5. 这个改动对"撤销必须立即生效"这一约束是否有影响。
+请直接给结论，不要复述问题。
+```
