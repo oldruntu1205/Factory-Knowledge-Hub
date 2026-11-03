@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/event_envelope.json",
+  "title": "EventEnvelope",
+  "description": "L1 §7.1。payload 不得包含原始语音、内部文档正文、客户 PII 或模型密钥。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "tenant_id",
+    "aggregate_id",
+    "aggregate_version",
+    "occurred_at",
+    "trace_id",
+    "producer",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "source.ingest.requested.v1",
+        "source.parsed.v1",
+        "interview.transcribed.v1",
+        "knowledge.draft.created.v1",
+        "knowledge.version.approved.v1",
+        "knowledge.version.published.v1",
+        "knowledge.version.revoked.v1",
+        "knowledge.index.ready.v1",
+        "rag.bad_case.created.v1",
+        "training.course.published.v1",
+        "training.assignment.created.v1",
+        "training.attempt.submitted.v1",
+        "training.practical.signed_off.v1",
+        "training.assignment.completed.v1",
+        "training.course.needs_review.v1"
+      ]
+    },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "aggregate_version": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "producer": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" }
+  }
+}

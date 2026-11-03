@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/answer_response.json",
+  "title": "AnswerResponse",
+  "description": "L1 §6.3。status 为 REFUSED 时必须带 refusal_code；ANSWERED 时必须至少一条 citation。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "answer", "citations", "requires_human_review", "trace_id", "index_generation"],
+  "properties": {
+    "status": { "type": "string", "enum": ["ANSWERED", "REFUSED", "HUMAN_REVIEW_REQUIRED"] },
+    "answer": { "type": "string" },
+    "refusal_code": {
+      "type": ["string", "null"],
+      "enum": [
+        "NO_EVIDENCE",
+        "INSUFFICIENT_EVIDENCE",
+        "CONFLICTING_EVIDENCE",
+        "ACCESS_DENIED",
+        "OUT_OF_SCOPE",
+        "HUMAN_REVIEW_REQUIRED",
+        "SOURCE_REVOKED",
+        null
+      ]
+    },
+    "requires_human_review": { "type": "boolean" },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "index_generation": { "type": "integer", "minimum": 0 },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "knowledge_id", "version_id", "locator"],
+        "properties": {
+          "evidence_id": { "type": "string" },
+          "knowledge_id": { "type": "string" },
+          "version_id": { "type": "string" },
+          "locator": { "type": "object" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "REFUSED" } }, "required": ["status"] },
+      "then": { "required": ["refusal_code"], "properties": { "refusal_code": { "type": "string" } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "ANSWERED" } }, "required": ["status"] },
+      "then": {
+        "required": ["citations"],
+        "properties": { "citations": { "minItems": 1 } }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "HUMAN_REVIEW_REQUIRED" } }, "required": ["status"] },
+      "then": { "properties": { "requires_human_review": { "const": true } } }
+    }
+  ]
+}

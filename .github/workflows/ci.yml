@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FKH_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FKH_JWT_SECRET: ci-only-secret-value-not-for-production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 安装依赖
+        run: uv sync --all-groups
+
+      - name: 静态检查
+        run: uv run ruff check src tests migrations
+
+      - name: 类型检查
+        run: uv run mypy
+
+      - name: 迁移首次应用
+        run: uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --status
+
+      # 测试内部会再次 apply（幂等）并跑 RLS / 状态机 / 培训 / 契约断言
+      - name: 门禁测试
+        run: uv run pytest -q
+
+      - name: 迁移回滚与重建演练
+        run: |
+          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --rollback 5
+          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --status
+          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL"
+          uv run python migrations/apply.py --url "$FKH_TEST_DATABASE_URL" --status
+
+      - name: 确认无跳过用例
+        run: |
+          # requires_pg 在 CI 中必须真实执行；出现 skip 说明门禁未被验证
+          uv run pytest -q -m requires_pg --no-header -p no:cacheprovider | tee /tmp/pg.txt
+          if grep -qE "skipped|no tests ran" /tmp/pg.txt; then
+            echo "::error::数据库门禁测试在 CI 中被跳过，禁止据此认定 Phase 0 通过"
+            exit 1
+          fi

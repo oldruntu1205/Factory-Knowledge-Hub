@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/answer_request.json",
+  "title": "AnswerRequest",
+  "description": "L1 §6.3。knowledge_scope 只能缩小服务端已授予的范围，不能提权。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query", "knowledge_scope", "language"],
+  "properties": {
+    "query": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "knowledge_scope": {
+      "type": "string",
+      "enum": ["customer_public", "internal_training", "internal_product"]
+    },
+    "language": { "type": "string", "enum": ["zh-CN", "en-US"] },
+    "max_evidence": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 },
+    "conversation_id": { "type": ["string", "null"], "maxLength": 128 }
+  }
+}

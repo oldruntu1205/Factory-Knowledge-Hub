@@ -1,0 +1,459 @@
+openapi: 3.1.0
+info:
+  title: Factory Knowledge Hub · knowledge-api
+  version: 0.1.0
+  description: |
+    受控知识治理与可引用 RAG 服务契约（L1 Rev.2 §6.2 / §13.5）。
+
+    通用约束：
+    - 所有端点要求 `Authorization: Bearer <OIDC JWT>`，服务端校验 issuer / audience / exp / 签名。
+    - `tenant_id`、`principal_id`、`roles` 只从令牌解析，不接受请求体或查询参数覆盖。
+    - 写接口要求 `Idempotency-Key`；并发更新使用 `If-Match` 携带版本号。
+    - 403 不区分"资源不存在"与"无权限"，避免用于探测资源存在性。
+    - 所有错误响应统一为 Error 结构，并携带 trace_id。
+
+    实现状态（Phase 0）：健康探针与认证已可用；业务端点已注册但返回 501，
+    检索链路在 Phase 2、培训问答在 Phase 3 接入。
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: health
+  - name: knowledge
+  - name: evidence
+  - name: training
+  - name: ops
+paths:
+  /health/live:
+    get:
+      tags: [health]
+      summary: 存活探针
+      security: []
+      responses:
+        "200":
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string }
+                  version: { type: string }
+  /health/ready:
+    get:
+      tags: [health]
+      summary: 依赖就绪探针
+      security: []
+      responses:
+        "200":
+          description: 依赖就绪
+        "503":
+          description: 依赖未就绪（数据库未配置或不可达）
+
+  /v1/sources:
+    post:
+      tags: [ops]
+      summary: 申请上传与导入
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_type, filename, sha256]
+              properties:
+                source_type: { type: string, enum: [document, audio] }
+                filename: { type: string, minLength: 1 }
+                sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+                expected_domain:
+                  type: string
+                  enum: [owner_experience, glass_materials, production_process, product_catalog, quality, equipment_safety, foreign_trade, training]
+      responses:
+        "201": { description: 已创建上传凭据 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/interviews:
+    post:
+      tags: [knowledge]
+      summary: 建立语音访谈任务
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [interviewee_subject, consent_record_id]
+              properties:
+                interviewee_subject: { type: string }
+                consent_record_id: { type: string }
+                topic: { type: string }
+      responses:
+        "201": { description: 访谈任务已建立 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/interviews/{interview_id}:
+    get:
+      tags: [knowledge]
+      summary: 查询转写与草稿状态
+      parameters:
+        - name: interview_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 转写与草稿状态 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/drafts:
+    post:
+      tags: [knowledge]
+      summary: 创建知识草稿
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [knowledge_key, domain, title, classification, audience]
+              properties:
+                knowledge_key: { type: string }
+                domain:
+                  type: string
+                  enum: [owner_experience, glass_materials, production_process, product_catalog, quality, equipment_safety, foreign_trade, training]
+                title: { type: string }
+                classification: { type: integer, minimum: 0, maximum: 4 }
+                audience: { type: string, enum: [internal, customer_public] }
+      responses:
+        "201": { description: 草稿已创建 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/{knowledge_id}/review:
+    post:
+      tags: [knowledge]
+      summary: 技术审核
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": { description: 审核结果 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: 版本冲突 }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/{knowledge_id}/publish:
+    post:
+      tags: [knowledge]
+      summary: 内部或对外发布
+      description: 对外发布要求 knowledge.publish_public 权限，且必须由独立于技术审批人的主体确认。
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": { description: 发布结果 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: 版本冲突 }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/{knowledge_id}/revoke:
+    post:
+      tags: [knowledge]
+      summary: 同步撤销授权与发布
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeId"
+      responses:
+        "200": { description: 已撤销，API 立即拒绝该版本 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/search:
+    post:
+      tags: [knowledge]
+      summary: 权限过滤检索
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query, knowledge_scope, language]
+              properties:
+                query: { type: string, minLength: 1, maxLength: 2000 }
+                knowledge_scope: { type: string, enum: [customer_public, internal_training, internal_product] }
+                language: { type: string, enum: [zh-CN, en-US] }
+                top_k: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        "200": { description: 已按 ACL 过滤的候选列表 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/knowledge/answer:
+    post:
+      tags: [knowledge]
+      summary: 带引用问答
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "../schema/answer_request.json"
+      responses:
+        "200":
+          description: 回答、拒答或转人工
+          content:
+            application/json:
+              schema:
+                $ref: "../schema/answer_response.json"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/evidence/{evidence_id}:
+    get:
+      tags: [evidence]
+      summary: 受控证据定位
+      description: 返回短期签名链接，不暴露私有存储路径；链接失效后不得再可读。
+      parameters:
+        - name: evidence_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 证据定位与签名链接 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/feedback:
+    post:
+      tags: [knowledge]
+      summary: 反馈与坏例登记
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [trace_id, category, expected_behavior]
+              properties:
+                trace_id: { type: string }
+                category: { type: string }
+                expected_behavior: { type: object }
+      responses:
+        "201": { description: 已登记坏例 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/courses:
+    post:
+      tags: [training]
+      summary: 创建课程草稿
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role_code, title]
+              properties:
+                role_code: { type: string }
+                title: { type: string }
+      responses:
+        "201": { description: 课程草稿已创建 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/courses/{course_id}/publish:
+    post:
+      tags: [training]
+      summary: 发布课程
+      description: 必须绑定至少一个已审批知识版本；校验题库状态后发布。
+      parameters:
+        - name: course_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 已发布 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/assignments:
+    post:
+      tags: [training]
+      summary: 按岗位分配课程
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: 已分配 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/me/assignments:
+    get:
+      tags: [training]
+      summary: 仅返回本人任务
+      responses:
+        "200": { description: 本人学习任务列表 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/ask:
+    post:
+      tags: [training]
+      summary: 培训带引用问答
+      description: 服务端由 assignment 反查租户、课程版本与知识白名单，不接受请求自带权限字段。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assignment_id, question, language]
+              properties:
+                assignment_id: { type: string }
+                question: { type: string, minLength: 1, maxLength: 2000 }
+                language: { type: string, enum: [zh-CN, en-US] }
+      responses:
+        "200":
+          description: 回答，结构同 AnswerResponse 并附带 assignment_id 与 course_version
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                required: [status, answer, citations, trace_id, assignment_id, course_version]
+                properties:
+                  assignment_id: { type: string }
+                  course_version: { type: integer, minimum: 1 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/attempts:
+    post:
+      tags: [training]
+      summary: 提交测验
+      description: 服务端按已批准题库版本判分，客户端提交的分数一律忽略。
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: 已收卷并判分 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/practical-signoffs:
+    post:
+      tags: [training]
+      summary: 人工实操签核
+      description: 校验导师与班组授权；签核人不得是当前学员本人。
+      responses:
+        "201": { description: 已签核 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/feedback:
+    post:
+      tags: [training]
+      summary: 形成受控坏例及课程反馈
+      responses:
+        "201": { description: 已登记 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/training/assignments/{assignment_id}/progress:
+    get:
+      tags: [training]
+      summary: 学习进度
+      description: 仅允许本人或授权范围（导师/管理员）读取。
+      parameters:
+        - name: assignment_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 进度详情 }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string }
+    KnowledgeId:
+      name: knowledge_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthenticated:
+      description: 缺少或无效令牌
+      content:
+        application/json:
+          schema: { $ref: "../schema/error.json" }
+    Forbidden:
+      description: 已认证但无权限；不泄露资源是否存在
+      content:
+        application/json:
+          schema: { $ref: "../schema/error.json" }
+    ValidationError:
+      description: 请求体不符合契约
+      content:
+        application/json:
+          schema: { $ref: "../schema/error.json" }
+    NotImplemented:
+      description: 该能力属于后续阶段
+      content:
+        application/json:
+          schema: { $ref: "../schema/error.json" }

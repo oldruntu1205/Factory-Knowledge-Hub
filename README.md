@@ -1,0 +1,138 @@
+# Factory Knowledge Hub V1.0
+
+制造业 AI 企业知识中枢。把工厂的产品资料、老板与老师傅的经验、外贸客服口径、新人培训内容，收敛为**可审核、可检索、可引用、可撤销**的知识资产。
+
+- 业务侧说明：[`Factory-Knowledge-Hub-V1.0-客户展示与ROI研究报告.html`](./Factory-Knowledge-Hub-V1.0-客户展示与ROI研究报告.html)
+- 技术与验收基线：[`Factory-Knowledge-Hub-V1.0-L1-架构与开发契约-Rev2-含新人培训.md`](./Factory-Knowledge-Hub-V1.0-L1-架构与开发契约-Rev2-含新人培训.md)
+
+本仓库当前处于 **Phase 0（契约与基础设施）**。Phase 0 的完成条件是门禁测试通过，而不是代码量。
+
+## 1. 已冻结的业务决策
+
+| 编号 | 决策 |
+|---|---|
+| D-01 | 混合部署；敏感知识在私有域处理，外部模型调用必须经企业 AI Gateway |
+| D-02 | 经验采集优先语音访谈；原始录音不可直接对外检索 |
+| D-03 | 系统独立部署，未来以 API/MCP 接入 AI Factory |
+| D-04 | 首批试点：产品知识 / 外贸 AI 客服 / 新人培训 |
+| D-05 | 对外业务保持人工审核，不自动报价、不承诺交期、不自动发信 |
+| D-06 | 新人培训正式纳入 V1.0 首批上线范围 |
+
+未签署的 ADR 见 [`docs/ADR/`](./docs/ADR/)。**未经签署的 ADR 不得被代码默认为已批准**：涉及部署区域、身份源、数据分级、模型路由、录音授权、SLO、客服接入、质量阈值的取值，一律以配置项 + 显式未配置报错处理。
+
+## 2. 目录结构
+
+L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模块**落地，避免在服务边界尚未稳定时拆分成多个可独立构建的包。
+
+```text
+.
+├── src/fkh/                 # 唯一 Python 包（apps/* 与 packages/* 的合并实现）
+│   ├── api/                 # knowledge-api：路由、依赖、错误映射
+│   ├── authz/               # OIDC 校验、主体上下文、Policy/ACL 判定
+│   ├── domain/              # 状态机、版本、审批、不变量
+│   ├── retrieval/           # Dense/Lexical、RRF、rerank、父块恢复
+│   ├── gateway/             # LLM Gateway 分级路由与脱敏
+│   ├── observability/       # trace、审计、指标
+│   ├── workers/             # ingestion / interview / evaluation
+│   └── mcp/                 # 受控 MCP 适配（只读工具）
+├── contracts/               # OpenAPI 3.1、JSON Schema、事件 Schema（契约单一来源）
+├── migrations/              # 可重放 SQL 迁移 + 回滚脚本
+├── tests/                   # contract / security / retrieval / evaluation / e2e
+├── deploy/                  # compose / nginx / backup
+└── docs/                    # ADR / SPEC / runbooks / acceptance
+```
+
+拆分时机：当某个服务需要独立伸缩或独立发布镜像时，再把 `src/fkh/<模块>` 提升为独立包。决策记录见 `docs/ADR/ADR-000-工程布局.md`。
+
+## 3. 本机环境现状（2026-11-03 实测）
+
+| 组件 | 状态 | 影响 |
+|---|---|---|
+| Python | 3.13.14 系统版；项目经 uv 固定为 **3.12.13** | 符合 L1 要求 |
+| uv | 0.12.5 | 依赖与解释器来源 |
+| Git | 2.55.0 | 已初始化仓库 |
+| Docker | **未安装** | 无法本地起 compose 编排 |
+| PostgreSQL / psql | **未安装系统服务** | 改用 pgserver 内嵌实例 |
+| pgserver（内嵌 PG 16.2 + pgvector） | **已安装，可运行** | 迁移与 RLS 门禁可本地实跑 |
+| WSL | **未安装** | 无 Linux 兜底环境 |
+
+数据库门禁不再依赖 Docker：`tests/conftest.py` 优先读 `FKH_TEST_DATABASE_URL`（CI），
+否则用 pgserver 起本地实例。两条路径跑的是同一批迁移与同一批断言。
+
+## 4. 快速开始
+
+```bash
+cd H:/MyWork/Factory-Knowledge-Hub
+uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
+uv run pytest -q              # 57 项：契约 + 跨租户 + 状态机 + 培训规则
+uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
+```
+
+健康检查：
+
+```bash
+curl -s http://127.0.0.1:8000/health/live
+curl -s http://127.0.0.1:8000/health/ready     # 未配置 FKH_DATABASE_URL 时返回 503
+```
+
+## 5. 数据库迁移
+
+迁移按编号顺序执行，每个文件都提供同名回滚脚本。**不要在未知现有表结构上直接对生产库执行。**
+
+```bash
+# 需要 PostgreSQL 16+，0002 需要 pgvector
+for f in migrations/0*.sql; do psql "$FKH_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done
+```
+
+| 文件 | 内容 | 回滚 |
+|---|---|---|
+| `0000_extensions.sql` | 扩展与兼容层 | `rollback/0000_down.sql` |
+| `0001_core_schema.sql` | 核心治理表、复合外键、不变量触发器 | `rollback/0001_down.sql` |
+| `0002_vector_index.sql` | pgvector 列与 HNSW/GIN 索引 | `rollback/0002_down.sql` |
+| `0003_training.sql` | 新人培训增量表 | `rollback/0003_down.sql` |
+| `0004_rls.sql` | 全表 RLS enable + force 与策略 | `rollback/0004_down.sql` |
+
+L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`0002` 中落实：
+
+1. 所有引用 `principals` 的外键改为 `(tenant_id, id)` 复合约束；
+2. `rag_queries` / `rag_citations` / `bad_cases` 统一复合外键，封闭跨租户引用；
+3. `knowledge_chunks.parent_chunk_id` 由触发器校验同租户、同版本、且父块 `chunk_kind='parent'`；
+4. `knowledge_versions` 的状态迁移、审批人、不可变内容由触发器约束，不只依赖 CHECK；
+5. `lexeme` 由应用层中文分词适配器写入（`fkh.retrieval.tokenize`），数据库侧只负责 `simple` 配置承载；
+6. `vector(1024)` 视为 BGE-M3 候选维度，换模型必须新建列或迁移，不允许混存。
+
+## 6. Phase 0 门禁
+
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 57 项）：
+
+| 门禁 | 证据 | 状态 |
+|---|---|---|
+| 跨租户 SELECT 返回零行 / 仅本租户 | `tests/security/test_tenant_isolation.py`（9 项） | ✅ 通过 |
+| 跨租户 UPDATE / DELETE 影响 0 行 | 同上 | ✅ 通过 |
+| 跨租户 INSERT 被 WITH CHECK 拒绝 | 同上 | ✅ 通过 |
+| 无租户上下文 fail-closed | 同上 | ✅ 通过 |
+| 跨租户主体 / 引用复合外键拦截 | 同上 | ✅ 通过 |
+| 状态机非法迁移被拒，且合法链路可走通 | `tests/security/test_governance.py`（12 项） | ✅ 通过 |
+| 公开审批需两人且不同；C1 不得公开 | 同上 | ✅ 通过 |
+| 版本内容不可变、不可删除、审计追加式 | 同上 | ✅ 通过 |
+| 父子块同版本、父块类型与 ACL 边界 | 同上 | ✅ 通过 |
+| 撤销为终态，不可复活 | 同上 | ✅ 通过 |
+| 学员不得自签核；课程发布需已审批知识 | `tests/security/test_training_rules.py`（7 项） | ✅ 通过 |
+| 撤销知识联动课程 NEEDS_REVIEW | 同上 | ✅ 通过 |
+| 契约 Schema 合法性与正反例 | `tests/contract/test_answer_contract.py`（28 项） | ✅ 通过 |
+| API 认证 / 提权 / 未实现 / 错误格式 | `tests/contract/test_api_contract.py` | ✅ 通过 |
+| OpenAPI 与代码路由完全一致 | 同上 | ✅ 通过 |
+| 迁移可重放、可回滚、可重建 | `migrations/apply.py --rollback 5` 实测 | ✅ 通过 |
+
+尚未完成（下一阶段）：
+
+- 混合权限父块的 ACL 恢复测试（`tests/security/test_parent_acl.py`）；
+- 应用层 Policy Engine 与检索域过滤（Phase 2 才有检索链路）；
+- 对象存储签名链接有效期与重放防护（Phase 2）；
+- 撤销后缓存与索引 generation 收敛验证（Phase 2）。
+
+P0 未全绿时不得宣告 Phase 0 完成，也不能用平均分掩盖单点失败。
+
+## 7. 明确不做
+
+V1.0 不做 ERP/MES 实时业务事实存储，不替代图纸管理/PDM，不提供自动报价或邮件自动发送，不允许模型直接控制生产设备，不把 Obsidian Vault 当共享盘，不把未审核转录稿作为对外答案依据，不做薪资绩效、人事主档、自动颁发法定资质、AI 自主评定实操合格。

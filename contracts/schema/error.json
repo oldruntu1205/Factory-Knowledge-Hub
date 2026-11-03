@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/error.json",
+  "title": "ErrorResponse",
+  "description": "L1 §6.3 统一错误格式。message 为固定文案，不得携带内部标识或资源存在性信息。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "trace_id"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "UNAUTHENTICATED",
+            "ACCESS_DENIED",
+            "VALIDATION_ERROR",
+            "NOT_IMPLEMENTED",
+            "VERSION_CONFLICT",
+            "RATE_LIMITED",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "trace_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

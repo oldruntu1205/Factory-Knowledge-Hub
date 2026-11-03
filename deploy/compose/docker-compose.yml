@@ -1,0 +1,45 @@
+# Phase 0 本地/试点编排基线。
+# ADR-01（部署区域与备份位置）签署前，不得把本文件当作生产部署方案。
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fkh}
+      POSTGRES_USER: ${POSTGRES_OWNER:-fkh_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须显式设置，不提供默认密码}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_OWNER:-fkh_owner} -d ${POSTGRES_DB:-fkh}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 默认不对宿主机暴露端口；需要本地运维时再临时发布 127.0.0.1:5432
+    expose:
+      - "5432"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      FKH_ENV: ${FKH_ENV:-staging}
+      FKH_DATABASE_URL: postgresql://${POSTGRES_APP_USER:-fkh_app}:${POSTGRES_APP_PASSWORD:?必须显式设置}@db:5432/${POSTGRES_DB:-fkh}
+      FKH_JWT_SECRET: ${FKH_JWT_SECRET:?未配置时认证不可用}
+      FKH_JWT_ISSUER: ${FKH_JWT_ISSUER:-fkh.local}
+      FKH_JWT_AUDIENCE: ${FKH_JWT_AUDIENCE:-fkh-api}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
