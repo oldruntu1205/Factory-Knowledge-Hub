@@ -6,27 +6,29 @@
 
 ## 1. 一句话现状
 
-知识从文件进来到可以被审核、发布、撤销、取证的**服务端闭环已经跑通**；检索与问答（Phase 2）尚未开始。
+知识从文件进来到可以被审核、发布、撤销、取证、**按权限检索**的**服务端闭环已经跑通**；
+问答生成（Phase 2 后半）与向量检索尚未开始。
 
 ```
-文件 → 解析 → 切片 → 入库(草稿) → 审核 → 内部批准 → 双签公开 → 撤销 → 事件投递
-        ✅     ✅      ✅        ✅      ✅        ✅        ✅      ✅(已实现)
+文件 → 解析 → 切片 → 入库(草稿) → 审核 → 内部批准 → 双签公开 → 撤销 → 事件投递 → 受控检索
+        ✅     ✅      ✅        ✅      ✅        ✅        ✅      ✅        ✅(词法)
 ```
 
-## 2. 三条 lane
+## 2. 四条 lane
 
 | Lane | 范围 | 状态 | 关键提交 |
 |---|---|---|---|
 | A · 采集与治理 | 解析、切片、入库、审核发布、ACL | 已完成，等待草稿终止裁决 | `16248f2` `6803710` `82eec2e` |
 | B · 事件投递 | outbox 租约、令牌、死信、重放 | 已完成，告警未接线 | `b93a61b` |
-| C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | 工作区 evidence 切片（0007） |
+| C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | `62f0f34`（0007） |
+| D · 检索 | `POST /v1/knowledge/search`：词法召回 + ACL 前置 + 检索审计 | 词法部分完成，向量/问答未开始 | 工作区 search 切片（0008） |
 
 ## 3. 怎么跑
 
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups
-uv run pytest -q                 # 257 项，本地自动起 pgserver
+uv run pytest -q                 # 274 项，本地自动起 pgserver
 uv run ruff check src tests migrations
 uv run mypy
 uv run uvicorn fkh.api.main:app --port 8000
@@ -68,7 +70,8 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0005 | 内容哈希唯一 | 已应用 |
 | 0006 | outbox 租约/令牌/死信 | 已应用 |
 | 0007 | 证据定位：required_scope + 访问审计 | 已应用（本机） |
-| **0008** | **预留给草稿终止路径（待裁决）** | 占位 |
+| 0008 | 检索审计：retrieval_queries（HMAC 摘要） | 已应用（本机） |
+| **0009** | **预留给草稿终止路径（待裁决）** | 占位 |
 
 **已应用的迁移文件不得修改**：`migrations/apply.py` 对已应用文件做校验和比对，改动会被判为漂移并拒绝执行。
 
@@ -87,9 +90,10 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 |---|---|---|
 | `DRAFT` / `REVIEWED` 无终止路径 | 错误草稿永久滞留、版本号被占 | `docs/REVIEW-REQUEST-draft-termination.md` |
 | 证据定位的 ID 语义与 audience→scope 映射 | 已裁决：chunk id + 新增 `required_scope`（0007） | `docs/SPEC/evidence-locator.md` |
+| 检索的可见性口径与审计表 | 已裁决：应用层 ACL + `retrieval_queries`（0008），不做 ACL 下推 | `docs/SPEC/retrieval-lexical.md` |
 | ADR-01 对象存储与区域 | 签名链接、备份位置 | 未启动 |
 | ADR-02 身份源 | 令牌 claim 结构（含 groups/departments） | 未启动 |
-| ADR-04/06 Embedding 模型 | 真实 tokenizer、向量维度 | 阻塞检索 |
+| ADR-04/06 Embedding 模型 | 真实 tokenizer、向量维度 | 阻塞向量检索与问答生成 |
 | ADR-08 质量阈值 | RAG Triad 门禁值 | 阻塞验收 |
 
 ## 8. 已知坑（踩过的，别再踩）
@@ -102,6 +106,10 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 6. 同一事务内 `now()` 恒定，事件顺序不能靠时间排；UUID 排序又与业务顺序无关。
 7. `pdfplumber.extract_text_lines()` 返回 `x0/top/x1/bottom`，没有 `bbox` 键。
 8. PyMuPDF 是 AGPL-3.0，闭源交付不要用；PDF 解析走 pdfplumber（MIT）。
+9. FastAPI 默认的 422 会回显 `input`（即请求体原文）。检索这类可能含敏感 query 的端点
+   必须用自定义 `RequestValidationError` 处理器收敛成固定文案，否则明文会进响应、前端日志与 APM。
+10. outbox relay 的时间判断一律用 `clock_timestamp()`：`now()` 是**事务开始时间**，
+    长连接下会落后于真实时间，表现为「事件到期了却领不到」。
 
 ## 9. 合并前检查
 

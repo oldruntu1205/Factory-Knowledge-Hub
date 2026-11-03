@@ -11,6 +11,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -57,6 +58,21 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
         trace_id = getattr(request.state, "trace_id", "-")
         return JSONResponse(status_code=exc.status_code, content=error_body(exc.code, trace_id))
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """请求体不合法时**不得回显请求内容**。
+
+        FastAPI 默认把 `input` 与 `ctx` 一起放进 422 响应，检索场景下就等于把用户的
+        原始 query 写回了响应体（还会被前端日志、APM 采集）。这里统一收敛成固定文案，
+        细节只留在服务端（如需排查，用 trace_id 关联，不落原始值）。
+        """
+        trace_id = getattr(request.state, "trace_id", "-")
+        return JSONResponse(
+            status_code=422, content=error_body(ErrorCode.VALIDATION_ERROR, trace_id)
+        )
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:

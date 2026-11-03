@@ -63,3 +63,24 @@ class PublishRequest(BaseModel):
 
     audience: Literal["internal", "customer_public"]
     reason: str | None = Field(default=None, max_length=500)
+
+
+class SearchRequest(BaseModel):
+    """词法检索请求（Phase 2 的检索侧，不含生成）。
+
+    `knowledge_scope` 只表达"想查哪个范围"，**不是**授权依据：
+    服务端还会校验令牌 allowed_scopes 是否包含该范围，未包含直接拒绝。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=2000)
+    knowledge_scope: KnowledgeScope
+    max_results: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query 不能为空白")
+        return value

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     evidence_max: int = 5
 
+    # 检索审计：query 只以 HMAC 落库，密钥不入表
+    retrieval_hash_key: str | None = None
+    retrieval_hash_key_id: str = "k1"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -98,6 +98,7 @@ for f in migrations/0*.sql; do psql "$FKH_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$
 | `0005_content_uniqueness.sql` | 同文档内容哈希唯一约束 | `rollback/0005_down.sql` |
 | `0006_outbox_delivery.sql` | outbox 租约 / 令牌 / 重试 / 死信 / 顺序键 + 重放审计表 | `rollback/0006_down.sql` |
 | `0007_evidence_access.sql` | 证据定位 `required_scope` + 访问审计表 | `rollback/0007_down.sql` |
+| `0008_retrieval_queries.sql` | 检索审计（HMAC 摘要、状态、返回数） | `rollback/0008_down.sql` |
 
 L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`0002` 中落实：
 
@@ -110,7 +111,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 257 项，其中 158 项依赖真实数据库、0 skip）：
+实测结果（2026-11-03，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 274 项，其中 175 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|
@@ -146,6 +147,10 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 | 证据定位：五种拒绝同码同 body、状态/组合/scope/ACL 全链路 | `tests/e2e/test_evidence_api.py`（22 项） | ✅ 通过 |
 | 证据定位：直接请求 parent 不得绕过子块可见性；locator 不泄露存储路径 | 同上 | ✅ 通过 |
 | 证据定位：成功与拒绝均落访问审计，跨租户不可读，审计失败不返回正文 | 同上 | ✅ 通过 |
+| 检索：不可见块（Deny/无匹配/空策略/跨租户）不出现在结果里 | `tests/e2e/test_search_api.py`（17 项） | ✅ 通过 |
+| 检索：parent 不得作为普通命中；分词器不符不命中；`& ! ( )` 不破语法 | 同上 | ✅ 通过 |
+| 检索：候选挤占允许不足额但不超上限；空结果与全拒绝同结构；片段≤400 码点且不泄露 | 同上 | ✅ 通过 |
+| 检索：成功/空结果/范围拒绝/执行失败均落审计；审计失败不返回结果；query 明文不进响应与日志 | 同上 | ✅ 通过 |
 
 ## 7. 解析与切片（Phase 1 已完成部分）
 
@@ -174,7 +179,10 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 - 草稿终止路径（`DRAFT` 无出口，待 L1 裁决，见 `docs/REVIEW-REQUEST-draft-termination.md`）；
 - OCR 通道（阻塞于 ADR-05）；
 - 真实 tokenizer 替换近似计数（阻塞于 ADR-04/06 的模型选择）；
-- 应用层 ACL 接入检索链路（引擎与规则已就绪，Phase 2 接上候选过滤）；
+- 词法检索已落地（`POST /v1/knowledge/search` + `0008`，规格见
+  [`docs/SPEC/retrieval-lexical.md`](./docs/SPEC/retrieval-lexical.md)）；仍未做：向量检索、
+  rerank、分页、候选挤占缓解（L1 已明确接受该代价）；
+- 应用层 ACL 已接入检索链路；向量候选过滤与混合排序待 ADR-04/06；
 - 撤销后缓存与索引 generation 收敛验证（Phase 2）；
 - 真实数据的金标准集与坏例回归（Phase 2，依赖 ADR-08）。
 

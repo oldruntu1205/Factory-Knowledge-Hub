@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/search_response.json",
+  "title": "SearchResponse",
+  "description": "POST /v1/knowledge/search 的 200 响应。按 L1 判决（2026-11-03）不返回 score、index_generation、候选数与过滤统计。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["results", "scoring", "trace_id"],
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "chunk_id",
+          "version_id",
+          "knowledge_id",
+          "text_snippet",
+          "snippet_truncated",
+          "locator",
+          "heading_path"
+        ],
+        "properties": {
+          "chunk_id": { "type": "string", "format": "uuid" },
+          "version_id": { "type": "string", "format": "uuid" },
+          "knowledge_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "knowledge_versions.document_id"
+          },
+          "text_snippet": { "type": "string", "minLength": 1, "maxLength": 400 },
+          "snippet_truncated": { "type": "boolean" },
+          "locator": { "type": ["object", "null"] },
+          "heading_path": { "type": ["array", "null"], "items": { "type": "string" } }
+        }
+      }
+    },
+    "scoring": { "type": "string", "const": "lexical-v1" },
+    "trace_id": { "type": "string", "minLength": 1 }
+  }
+}

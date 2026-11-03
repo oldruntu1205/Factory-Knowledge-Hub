@@ -156,5 +156,6 @@ C. 加软删除列 discarded_at，不动状态机，所有查询追加条件。
 
 ## 附：迁移编号占位（2026-11-03 补记，实施侧）
 
-`0006_outbox_delivery.sql` 已被 outbox 投递切片、`0007_evidence_access.sql` 已被证据定位切片占用。
-本问题的裁决若选方案 B/C，请使用 **`0008`**，避免与已应用迁移撞号；上文的问题清单不变。
+`0006_outbox_delivery.sql`（outbox 投递）、`0007_evidence_access.sql`（证据定位）、
+`0008_retrieval_queries.sql`（检索审计）已被占用。本问题的裁决若选方案 B/C，请使用 **`0009`**，
+避免与已应用迁移撞号；上文的问题清单不变。

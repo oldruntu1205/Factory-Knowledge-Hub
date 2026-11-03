@@ -224,6 +224,10 @@ paths:
     post:
       tags: [knowledge]
       summary: 权限过滤检索
+      description: >-
+        词法检索（cjk-char-v1 分词 + ts_rank_cd 排序），不做向量检索与生成。
+        max_results 是返回上限，不保证填满：候选窗口内被 ACL 拒绝的条数越多，返回越少。
+        空结果与「都无权限」不可区分（同为 200 + 空数组），但缺少接口权限或范围未授权仍返回 403。
       requestBody:
         required: true
         content:
@@ -231,17 +235,22 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [query, knowledge_scope, language]
+              required: [query, knowledge_scope]
               properties:
                 query: { type: string, minLength: 1, maxLength: 2000 }
                 knowledge_scope: { type: string, enum: [customer_public, internal_training, internal_product] }
-                language: { type: string, enum: [zh-CN, en-US] }
-                top_k: { type: integer, minimum: 1, maximum: 50, default: 10 }
+                max_results: { type: integer, minimum: 1, maximum: 50, default: 10 }
       responses:
-        "200": { description: 已按 ACL 过滤的候选列表 }
+        "200":
+          description: 已按 ACL 过滤的候选片段
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /v1/knowledge/answer:
     post:
@@ -456,6 +465,8 @@ components:
   schemas:
     EvidenceResponse:
       $ref: "../schema/evidence_response.json"
+    SearchResponse:
+      $ref: "../schema/search_response.json"
   securitySchemes:
     bearerAuth:
       type: http
@@ -495,6 +506,11 @@ components:
           schema: { $ref: "../schema/error.json" }
     NotImplemented:
       description: 该能力属于后续阶段
+      content:
+        application/json:
+          schema: { $ref: "../schema/error.json" }
+    ServiceUnavailable:
+      description: 依赖未配置或不可用（例如检索审计密钥缺失）
       content:
         application/json:
           schema: { $ref: "../schema/error.json" }
