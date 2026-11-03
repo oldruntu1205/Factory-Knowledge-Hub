@@ -4,6 +4,8 @@
 
 - 业务侧说明：[`Factory-Knowledge-Hub-V1.0-客户展示与ROI研究报告.html`](./Factory-Knowledge-Hub-V1.0-客户展示与ROI研究报告.html)
 - 技术与验收基线：[`Factory-Knowledge-Hub-V1.0-L1-架构与开发契约-Rev2-含新人培训.md`](./Factory-Knowledge-Hub-V1.0-L1-架构与开发契约-Rev2-含新人培训.md)
+- 交接与当前状态：[`docs/HANDOFF.md`](./docs/HANDOFF.md)
+- 并行开发约定：[`docs/WORKING-AGREEMENT.md`](./docs/WORKING-AGREEMENT.md)
 
 本仓库当前处于 **Phase 0（契约与基础设施）**。Phase 0 的完成条件是门禁测试通过，而不是代码量。
 

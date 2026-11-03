@@ -18,6 +18,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from fkh.api.errors import ApiError, ErrorCode
+from fkh.authz.policy import Subject
 from fkh.config import Settings, get_settings
 
 _bearer = HTTPBearer(auto_error=False)
@@ -31,6 +32,11 @@ class PrincipalContext:
     roles: frozenset[str]
     scopes: frozenset[str]
     allowed_scopes: frozenset[str]
+    # ACL 的四个维度里，roles/groups/departments/subjects 都会参与判定。
+    # 这里如果漏解析 groups/departments，策略里按部门授权的规则在真实请求下会
+    # 静默失效——不报错、只是永远不匹配，比报错更难发现。
+    groups: frozenset[str] = frozenset()
+    departments: frozenset[str] = frozenset()
 
     def require_scope(self, scope: str) -> None:
         if scope not in self.scopes:
@@ -41,6 +47,16 @@ class PrincipalContext:
         if requested not in self.allowed_scopes:
             raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"knowledge_scope={requested} 超出授权范围")
         return requested
+
+    def to_subject(self) -> Subject:
+        """转成 ACL 判定用的主体。两条链路的字段必须一一对应，否则 ACL 形同虚设。"""
+        return Subject(
+            principal_id=str(self.principal_id),
+            tenant_id=str(self.tenant_id),
+            roles=self.roles,
+            groups=self.groups,
+            departments=self.departments,
+        )
 
 
 def _as_uuid(value: Any, claim: str) -> UUID:
@@ -84,6 +100,8 @@ def decode_token(token: str, settings: Settings) -> PrincipalContext:
         roles=_as_str_set(payload.get("roles")),
         scopes=_as_str_set(payload.get("scope")),
         allowed_scopes=_as_str_set(payload.get("allowed_scopes")),
+        groups=_as_str_set(payload.get("groups")),
+        departments=_as_str_set(payload.get("departments")),
     )
 
 
