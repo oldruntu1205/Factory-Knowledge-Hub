@@ -98,6 +98,28 @@ def app_conn(pg_url: str, app_role: str) -> Iterator[psycopg.Connection]:
         conn.rollback()
 
 
+@pytest.fixture(scope="session")
+def relay_role(pg_url: str) -> str:
+    """创建 outbox relay 的平台角色。
+
+    角色 DDL 的单一来源是 `deploy/sql/relay_role.sql`：迁移只管 schema，
+    角色是集群级对象，回滚迁移不应顺手删角色。
+    """
+    sql = (ROOT / "deploy" / "sql" / "relay_role.sql").read_text(encoding="utf-8")
+    with psycopg.connect(pg_url, autocommit=True) as conn:
+        conn.execute(sql)
+    return "fkh_relay"
+
+
+@pytest.fixture
+def relay_conn(pg_url: str, relay_role: str) -> Iterator[psycopg.Connection]:
+    """以平台角色（BYPASSRLS）建立的连接：跨租户可见，但只能改投递状态列。"""
+    with psycopg.connect(pg_url, autocommit=False) as conn:
+        conn.execute(f"SET ROLE {relay_role}")
+        yield conn
+        conn.rollback()
+
+
 # ---------------------------------------------------------------------------
 # 造数工具
 # ---------------------------------------------------------------------------

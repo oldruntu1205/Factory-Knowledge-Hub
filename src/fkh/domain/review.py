@@ -34,6 +34,19 @@ class ReviewConflict(ValueError):
     """当前状态不允许该操作。"""
 
 
+# 同一聚合版本内的事件顺序：按**业务阶段**排，不按写入时刻排。
+#
+# 发布与撤销同属一个版本（aggregate_version = version_no），outbox 的顺序唯一键是
+# (tenant, aggregate_type, aggregate_id, aggregate_version, event_ordinal)。
+# 两者都用默认 0 会被唯一约束拒绝；改用 occurred_at 或 UUID 排序又会与业务顺序相反
+# （同一事务内 now() 恒定、UUID 随机）。所以顺序必须由生产者在写入时显式给出。
+VERSION_EVENT_ORDINAL: dict[str, int] = {
+    "knowledge.version.approved.v1": 0,
+    "knowledge.version.published.v1": 1,
+    "knowledge.version.revoked.v1": 2,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class VersionSnapshot:
     id: UUID
@@ -257,11 +270,18 @@ class ReviewService:
 
         payload 只放受控 ID 与哈希，不放正文、不放客户信息、不放模型密钥（L1 §7.2）。
         """
+        try:
+            ordinal = VERSION_EVENT_ORDINAL[event_type]
+        except KeyError as exc:
+            # 没有登记顺序的事件不得写入：投递器按 (版本, ordinal) 串行，
+            # 缺了它就只能凭时间/UUID 猜序，猜错会让撤销先于发布被投递。
+            raise ValueError(f"事件类型未登记业务顺序：{event_type}") from exc
         self._conn.execute(
             """INSERT INTO outbox_events
-                 (tenant_id, aggregate_type, aggregate_id, aggregate_version, event_type, payload)
-               VALUES (%s, 'knowledge_version', %s, %s, %s, %s)""",
-            (self._tenant, aggregate_id, aggregate_version, event_type, Jsonb(payload)),
+                 (tenant_id, aggregate_type, aggregate_id, aggregate_version, event_type,
+                  payload, event_ordinal)
+               VALUES (%s, 'knowledge_version', %s, %s, %s, %s, %s)""",
+            (self._tenant, aggregate_id, aggregate_version, event_type, Jsonb(payload), ordinal),
         )
 
 

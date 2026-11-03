@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     jwt_issuer: str = "fkh.local"
     jwt_audience: str = "fkh-api"
 
+    # outbox 投递：传输层未配置时 relay 拒绝启动（fail-closed），不静默丢事件
+    outbox_transport: str = "none"
+    outbox_webhook_url: str | None = None
+    outbox_timeout_seconds: float = 10.0
+    outbox_producer: str = "knowledge-api"
+    outbox_batch_size: int = 20
+    outbox_lease_seconds: int = 30
+    outbox_max_attempts: int = 8
+    outbox_backoff_base_seconds: float = 2.0
+    outbox_backoff_cap_seconds: float = 300.0
+
     # 检索默认值（L1 §4.4 初始试验值，不是验收阈值）
     retrieval_dense_top_k: int = 30
     retrieval_lexical_top_k: int = 30
