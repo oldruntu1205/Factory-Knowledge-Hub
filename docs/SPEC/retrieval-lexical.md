@@ -155,3 +155,7 @@ hybrid：向量路（pgvector 余弦，tenant/scope/状态/model_id 过滤，LIM
 | Q5 保留两路深度不对称 | 向量 `min(max×4,200)`、词法 `max`；测试固定该公式 |
 | Q6 授权 L2 同步改契约与断言 | 契约 + `tests/e2e/test_search_hybrid_api.py`（17 项）+ 本切片终审 |
 | Q7 context 保持词法 | `routes_context` 显式传 `LEXICAL_MODE`；测试断言审计模式为 `lexical-v1` |
+
+> **终审结论（2026-11-04）**：`_evidence/l1_reply_hybrid_wiring_final_20261104.md` 提出两项修改
+> （迁移跳号回滚、回填原子性证据），落实于 `302c367` 后经 `_evidence/l1_reply_hybrid_wiring_rereview_20261104.md`
+> 判定 **PASS**。生产启用混合检索仍未授权（真实 BGE-M3 与 recall@10 待验收）。

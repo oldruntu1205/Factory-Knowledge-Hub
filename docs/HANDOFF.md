@@ -149,3 +149,7 @@ uv run python migrations/apply.py --url "$URL" --status
 ```
 
 数据库相关测试出现 skip 视为未验证，不得据此宣布通过。
+
+> **混合检索切片终审（2026-11-04）**：`e75f3c9` + `302c367` 经 L1 判定 **PASS**
+> （`_evidence/l1_reply_hybrid_wiring_rereview_20261104.md`）。迁移跳号规则已改成
+> 「允许跳号、禁止倒序回填、回滚按应用顺序」，见 WORKING-AGREEMENT §2。
