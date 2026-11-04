@@ -23,6 +23,7 @@ from fkh.domain.chunking.types import ChunkingConfig
 from fkh.domain.lexeme import TOKENIZER_ID as LEXEME_TOKENIZER_ID
 from fkh.domain.parsing.registry import parse_document
 from fkh.domain.state_machine import VersionStatus
+from fkh.retrieval.embedding import Embedder
 from fkh.workers.repository import DuplicateContentError, IngestionRepository
 
 VALID_CLASSIFICATIONS = range(0, 5)
@@ -93,6 +94,7 @@ def ingest_document(
     *,
     config: ChunkingConfig | None = None,
     counter: TokenCounter | None = None,
+    embedder: Embedder | None = None,
 ) -> IngestionResult:
     parsed = parse_document(
         request.content,
@@ -106,6 +108,17 @@ def ingest_document(
 
     if not chunking.parents:
         raise ValueError("解析后没有任何可索引内容，拒绝写入空版本")
+
+    # 向量在事务外算完再入库：CPU 推理可能是分钟级，不能把连接和锁持有一整轮
+    embeddings: list[list[float]] | None = None
+    if embedder is not None:
+        texts = [chunk.text for chunk in chunking.parents] + [
+            chunk.text for chunk in chunking.children
+        ]
+        vectors = embedder.embed_documents(texts)
+        if any(len(vector) != embedder.dimension for vector in vectors):
+            raise ValueError(f"向量维度与 {embedder.model_id} 声明不一致")
+        embeddings = vectors
 
     object_key = request.source_object_key or f"pending/{request.source_id}/{request.filename}"
     review_note = "ingest"
@@ -152,6 +165,8 @@ def ingest_document(
             lexeme_tokenizer_id=LEXEME_TOKENIZER_ID,
             parser_id=parsed.parser_id,
             language=request.language,
+            embeddings=embeddings,
+            embedding_model_id=embedder.model_id if embedder is not None else None,
         )
 
         repo.transition(

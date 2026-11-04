@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import tempfile
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -52,7 +53,15 @@ def pg_url() -> str:
     except ImportError:  # pragma: no cover - 取决于环境
         pytest.skip("requires_pg: 未配置 FKH_TEST_DATABASE_URL，且本机未安装 pgserver")
 
-    server = pgserver.get_server(str(ROOT / "pgdata"))
+    # 数据目录默认放系统临时目录，不放仓库内。
+    # 工作区里的 pgdata 会被文件监控/索引/杀毒实时扫描，PostgreSQL 在启动时
+    # 写 pgdata/log 会撞上 sharing violation，卡住 30 秒重试而 pg_ctl 只等 10 秒，
+    # 表现为"所有 requires_pg 测试 fixture 报错"。
+    data_dir = os.environ.get("FKH_TEST_PGDATA") or os.path.join(
+        tempfile.gettempdir(), "fkh-pgdata"
+    )
+    os.makedirs(data_dir, exist_ok=True)
+    server = pgserver.get_server(data_dir)
     uri = str(server.get_uri())
     _bootstrap(uri)
     return uri

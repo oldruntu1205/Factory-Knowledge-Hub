@@ -22,6 +22,14 @@ dependencies = [
     "markdown-it-py>=4.2.0",
 ]
 
+# 向量能力按需安装：torch 与模型权重体积大，默认安装不含它们。
+# 未安装时 embedding_provider 只能取 none/test，构造 bge-m3 会给出明确错误。
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=3.0.0",
+    "torch>=2.4.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
@@ -63,3 +71,9 @@ python_version = "3.12"
 strict = true
 warn_unreachable = true
 files = ["src"]
+
+# 可选依赖（torch / sentence-transformers）不带类型存根。
+# 它们只在 embedding_provider=bge-m3 时被延迟导入，缺失不影响默认安装。
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "torch.*"]
+ignore_missing_imports = true

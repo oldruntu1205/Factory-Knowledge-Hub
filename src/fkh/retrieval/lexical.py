@@ -39,6 +39,14 @@ MAX_CANDIDATES = 200
 SNIPPET_CODE_POINTS = 400
 SCORING = "lexical-v1"
 
+# 可见性谓词：租户、范围、状态三件套。词法与向量两路必须用同一份，
+# 否则会出现"词法查得到、向量查不到"或反过来的口径漂移。
+VISIBILITY_PREDICATE = """
+   AND v.required_scope = %(scope)s
+   AND ( (v.status = 'APPROVED_INTERNAL' AND v.audience = 'internal')
+      OR (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public') )
+"""
+
 _CANDIDATE_SQL = f"""
 SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_path,
        p.policy_json, c.index_generation,
@@ -53,9 +61,7 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
    AND c.lexeme @@ tq.q
    AND c.chunk_kind = 'child'
    AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
-   AND v.required_scope = %(scope)s
-   AND ( (v.status = 'APPROVED_INTERNAL' AND v.audience = 'internal')
-      OR (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public') )
+   {VISIBILITY_PREDICATE}
  ORDER BY score DESC, c.id
  LIMIT %(limit)s
 """
@@ -169,6 +175,7 @@ __all__ = [
     "MAX_CANDIDATES",
     "OVERFETCH",
     "SCORING",
+    "VISIBILITY_PREDICATE",
     "SNIPPET_CODE_POINTS",
     "TOKENIZER_ID",
     "LexicalRetriever",

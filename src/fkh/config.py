@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     retrieval_hash_key: str | None = None
     retrieval_hash_key_id: str = "k1"
 
+    # Embedding（ADR-04/06）。数据不出境：只用本地权重，不提供任何远程 endpoint。
+    # provider=none 时纯词法检索，不生成向量，也不假装有语义能力。
+    embedding_provider: str = "none"      # none | bge-m3 | test（test 仅限测试）
+    embedding_device: str = "cpu"         # cpu | cuda；同模型换设备不需要重建索引
+    embedding_batch_size: int = 8
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

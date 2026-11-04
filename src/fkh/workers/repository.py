@@ -18,6 +18,7 @@ from fkh.authz.policy import AclPolicy
 from fkh.domain.chunking.types import Chunk
 from fkh.domain.lexeme import segment_cjk
 from fkh.domain.state_machine import VersionStatus, assert_transition
+from fkh.retrieval.embedding import to_pgvector
 
 
 class DuplicateContentError(ValueError):
@@ -185,7 +186,18 @@ class IngestionRepository:
         lexeme_tokenizer_id: str,
         parser_id: str,
         language: str,
+        embeddings: Sequence[Sequence[float]] | None = None,
+        embedding_model_id: str | None = None,
     ) -> tuple[int, int]:
+        expected = len(parents) + len(children)
+        if embeddings is not None:
+            if len(embeddings) != expected:
+                raise ValueError(f"向量数量 {len(embeddings)} 与切片数量 {expected} 不一致")
+            if embedding_model_id is None:
+                raise ValueError("写入向量必须同时给出 embedding_model_id")
+
+        cursor = 0
+
         # 父块必须先落库：chunk 的父引用有外键，且触发器要求父块已存在且为 parent 类型
         parent_ids: dict[int, UUID] = {}
         for chunk in parents:
@@ -199,7 +211,10 @@ class IngestionRepository:
                 lexeme_tokenizer_id=lexeme_tokenizer_id,
                 parser_id=parser_id,
                 language=language,
+                embedding=embeddings[cursor] if embeddings is not None else None,
+                embedding_model_id=embedding_model_id,
             )
+            cursor += 1
 
         for chunk in children:
             parent_id: UUID | None = None
@@ -219,7 +234,10 @@ class IngestionRepository:
                 lexeme_tokenizer_id=lexeme_tokenizer_id,
                 parser_id=parser_id,
                 language=language,
+                embedding=embeddings[cursor] if embeddings is not None else None,
+                embedding_model_id=embedding_model_id,
             )
+            cursor += 1
 
         return len(parents), len(children)
 
@@ -235,14 +253,16 @@ class IngestionRepository:
         lexeme_tokenizer_id: str,
         parser_id: str,
         language: str,
+        embedding: Sequence[float] | None = None,
+        embedding_model_id: str | None = None,
     ) -> UUID:
         row = self._conn.execute(
             """INSERT INTO knowledge_chunks
                  (tenant_id, version_id, parent_chunk_id, chunk_kind, chunk_text, chunk_sha256,
                   tokenizer_id, lexeme_tokenizer_id, heading_path, locator, metadata,
-                  acl_policy_id, index_generation, lexeme)
+                  acl_policy_id, index_generation, lexeme, embedding, embedding_model_id)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                       to_tsvector('simple', %s))
+                       to_tsvector('simple', %s), %s::vector, %s)
                RETURNING id""",
             (
                 self._tenant,
@@ -266,6 +286,8 @@ class IngestionRepository:
                 acl_policy_id,
                 index_generation,
                 segment_cjk(chunk.text),
+                to_pgvector(embedding) if embedding is not None else None,
+                embedding_model_id,
             ),
         ).fetchone()
         if row is None:

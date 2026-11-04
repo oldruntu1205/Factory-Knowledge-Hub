@@ -1,0 +1,1 @@
+H:/MyWork/Factory-Knowledge-Hub/.venv/Lib/site-packages/pgserver/pginstall/bin/postgres.exe "-D" "H:/MyWork/Factory-Knowledge-Hub/fkh-pg-probe" "-h" "127.0.0.1" "-p" "13633"
