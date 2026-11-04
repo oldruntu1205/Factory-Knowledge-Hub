@@ -32,3 +32,6 @@ desktop.ini
 # 本地测试数据库（放在系统临时目录，不应进库）
 fkh-pgdata/
 fkh-pg-probe/
+pytest-of-*/
+# TMPDIR 指向工作区时产生的临时文件
+tmp???????
