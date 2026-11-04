@@ -309,6 +309,26 @@ def test_hybrid_without_model_is_503_and_audits_not_executed(
     ]
 
 
+def test_scope_refusal_audits_not_executed(
+    make_client: Any, admin: psycopg.Connection[Any], tenant: str
+) -> None:
+    """召回前就被拒绝的记录不得伪记成执行过词法（判决 Q3）。"""
+    version = _version(admin, tenant)
+    _chunk(admin, tenant, version, create_acl(admin, tenant, {"allow": {"roles": ["staff"]}}))
+    principal, _ = _staff(admin, tenant)
+    admin.commit()
+
+    # 令牌只授权 customer_public，却请求 internal_product
+    token = _token(tenant, principal, allowed=("customer_public",))
+    response = _search(make_client(), token)
+    assert response.status_code == 403
+
+    rows = _audit_rows(admin, tenant)
+    assert [(row[0], row[1], row[4]) for row in rows] == [
+        ("REFUSED", "SCOPE_NOT_AUTHORIZED", "not_executed")
+    ]
+
+
 def test_unknown_mode_is_503_and_never_falls_back_to_lexical(
     make_client: Any, admin: psycopg.Connection[Any], tenant: str
 ) -> None:

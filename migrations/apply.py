@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import psycopg
@@ -49,13 +50,55 @@ def version_of(path: Path) -> str:
     return path.name.split("_", 1)[0]
 
 
-def fetch_applied(conn: psycopg.Connection) -> dict[str, str]:
+def fetch_applied_rows(conn: psycopg.Connection) -> list[tuple[str, str, datetime]]:
+    """按**应用顺序**返回已应用迁移（version, checksum, applied_at）。
+
+    回滚必须按应用顺序倒序执行，不能按版本号字符串倒序：迁移号允许跳过预留号
+    （如 0010），版本序与应用序在跳号后不再等价。
+    """
     with conn.cursor() as cur:
         cur.execute(VERSION_TABLE_SQL)
-        cur.execute("SELECT version, checksum FROM schema_migrations ORDER BY version")
+        cur.execute(
+            "SELECT version, checksum, applied_at FROM schema_migrations "
+            "ORDER BY applied_at, version"
+        )
         rows = cur.fetchall()
     conn.commit()
-    return {str(version): str(checksum) for version, checksum in rows}
+    return [(str(version), str(checksum), applied_at) for version, checksum, applied_at in rows]
+
+
+def fetch_applied(conn: psycopg.Connection) -> dict[str, str]:
+    return {version: checksum for version, checksum, _ in fetch_applied_rows(conn)}
+
+
+def plan_rollback(applied_rows: list[tuple[str, str, datetime]], steps: int) -> list[str]:
+    """回滚计划：按应用顺序的倒序取 steps 个版本。
+
+    跳号（如 0010 尚未落地）不影响结果——只回滚**实际应用过**的版本。
+    """
+    if steps <= 0:
+        raise SystemExit("--rollback 的步数必须为正整数")
+    return [version for version, _, _ in reversed(applied_rows)][:steps]
+
+
+def assert_no_backfill(files: list[Path], applied: dict[str, str]) -> None:
+    """禁止把新迁移插到已应用版本之前（历史回填）。
+
+    允许跳号（预留号缺席），但不允许**倒序追赶**：把编号更小的迁移在更高版本
+    已经应用之后补上，会让 schema_migrations 的应用顺序与版本顺序分叉，
+    回滚与漂移检测都失去意义。需要补的内容请取「当前最大号 + 1」。
+    """
+    if not applied:
+        return
+    highest = max(applied)
+    late = [p for p in files if version_of(p) not in applied and version_of(p) <= highest]
+    if late:
+        names = "、".join(path.name for path in late)
+        raise SystemExit(
+            f"检测到历史回填，拒绝执行：{names}\n"
+            f"已应用的最高版本是 {highest}，新迁移必须取更大编号；"
+            "预留号若已被跳过，请把该方案改用新号而不是补洞。"
+        )
 
 
 def assert_no_drift(files: list[Path], applied: dict[str, str]) -> None:
@@ -115,17 +158,29 @@ def apply_all(
     return executed
 
 
+def missing_rollback_scripts(targets: list[str]) -> list[str]:
+    """返回缺失的回滚脚本名；非空即整体中止，不允许"滚一半"。"""
+    return [
+        f"{version}_down.sql"
+        for version in targets
+        if not (ROLLBACK_DIR / f"{version}_down.sql").exists()
+    ]
+
+
 def rollback_last(conn: psycopg.Connection, steps: int) -> None:
-    applied = fetch_applied(conn)
-    if not applied:
+    applied_rows = fetch_applied_rows(conn)
+    if not applied_rows:
         print("没有可回滚的迁移。")
         return
 
-    targets = sorted(applied, reverse=True)[:steps]
+    targets = plan_rollback(applied_rows, steps)
+    # 先整体校验脚本齐备再动手：不能滚一半才发现缺文件
+    missing = missing_rollback_scripts(targets)
+    if missing:
+        raise SystemExit(f"缺少回滚脚本：{'、'.join(missing)}，已中止，未做任何变更。")
+
     for version in targets:
         script = ROLLBACK_DIR / f"{version}_down.sql"
-        if not script.exists():
-            raise SystemExit(f"缺少回滚脚本：{script.name}，已中止，未做任何变更。")
         print(f"<- {script.name}")
         with conn.transaction():
             conn.execute(script.read_text(encoding="utf-8"))
@@ -165,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             rollback_last(conn, args.rollback)
             return 0
         assert_no_drift(files, applied)
+        assert_no_backfill(files, applied)
         apply_all(conn, files, applied, dry_run=args.dry_run)
     return 0
 
