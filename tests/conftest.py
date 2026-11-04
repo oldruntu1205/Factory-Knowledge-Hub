@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import tempfile
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -57,9 +56,10 @@ def pg_url() -> str:
     # 工作区里的 pgdata 会被文件监控/索引/杀毒实时扫描，PostgreSQL 在启动时
     # 写 pgdata/log 会撞上 sharing violation，卡住 30 秒重试而 pg_ctl 只等 10 秒，
     # 表现为"所有 requires_pg 测试 fixture 报错"。
-    data_dir = os.environ.get("FKH_TEST_PGDATA") or os.path.join(
-        tempfile.gettempdir(), "fkh-pgdata"
-    )
+    # 不能用 tempfile.gettempdir()：本机 TMPDIR 被设成了工作区，
+    # gettempdir() 会返回仓库根目录，把 42MB 的数据库建进版本库。
+    base_tmp = os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
+    data_dir = os.environ.get("FKH_TEST_PGDATA") or os.path.join(base_tmp, "fkh-pgdata")
     os.makedirs(data_dir, exist_ok=True)
     server = pgserver.get_server(data_dir)
     uri = str(server.get_uri())

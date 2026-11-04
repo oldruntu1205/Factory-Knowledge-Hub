@@ -28,3 +28,7 @@ out/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 本地测试数据库（放在系统临时目录，不应进库）
+fkh-pgdata/
+fkh-pg-probe/
