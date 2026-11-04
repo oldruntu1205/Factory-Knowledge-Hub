@@ -35,3 +35,6 @@ fkh-pg-probe/
 pytest-of-*/
 # TMPDIR 指向工作区时产生的临时文件
 tmp???????
+
+# 本地 HuggingFace 权重缓存（体积大，不进库）
+.hf-cache/

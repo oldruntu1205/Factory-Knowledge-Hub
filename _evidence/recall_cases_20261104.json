@@ -1,0 +1,306 @@
+{
+  "note": "Recall@K 评测集：同一批问题分别跑纯词法与混合召回。needle = 正确片段里必须出现的串（人工挑选，脚本会校验它确实存在于语料）。query 分为「术语型」（含原文关键词）与「释义型」（换说法）两类，后者用来观察向量召回的增益。",
+  "k_default": 10,
+  "cases": [
+    {
+      "id": "L01",
+      "query": "为什么不把 ACL 下推到 SQL 里做",
+      "needle": "与应用层求值器出现两套语义",
+      "doc": "retrieval-lexical"
+    },
+    {
+      "id": "L02",
+      "query": "max_results 能保证返回满条吗",
+      "needle": "不保证填满",
+      "doc": "retrieval-lexical"
+    },
+    {
+      "id": "L03",
+      "query": "检索审计里的查询是怎么存的",
+      "needle": "HMAC-SHA256",
+      "doc": "retrieval-lexical"
+    },
+    {
+      "id": "L04",
+      "query": "审计写入失败会怎么样",
+      "needle": "审计写失败",
+      "doc": "evidence-locator"
+    },
+    {
+      "id": "L05",
+      "query": "父块文本能不能直接当搜索结果返回",
+      "needle": "parent 的文本聚合了它全部 child",
+      "doc": "retrieval-lexical"
+    },
+    {
+      "id": "L06",
+      "query": "候选挤占是什么意思",
+      "needle": "候选挤占",
+      "doc": "retrieval-lexical"
+    },
+    {
+      "id": "L07",
+      "query": "混合召回为什么用 RRF 而不是分数加权",
+      "needle": "RRF 只用排名",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L08",
+      "query": "融合之后还要不要再做一次鉴权",
+      "needle": "先召回后鉴权",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L09",
+      "query": "上下文端点会不会跟着启用混合检索",
+      "needle": "固定词法",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "L10",
+      "query": "为什么不调用境外的向量模型接口",
+      "needle": "数据不出境",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L11",
+      "query": "换显卡以后已建好的向量索引要重建吗",
+      "needle": "换设备不需要重建索引",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L12",
+      "query": "哪些向量模型不能用于商业闭源交付",
+      "needle": "CC BY-NC-4.0",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L13",
+      "query": "换成不同维度的模型要怎么迁移",
+      "needle": "embedding_v2",
+      "doc": "embedding-and-hybrid"
+    },
+    {
+      "id": "L14",
+      "query": "上线前必须补做什么实测",
+      "needle": "recall@10",
+      "doc": "DEPLOYMENT-hardware"
+    },
+    {
+      "id": "H01",
+      "query": "迁移编号被别的方案占用了怎么办",
+      "needle": "占号冲突处理",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H02",
+      "query": "已经执行过的迁移脚本还能改吗",
+      "needle": "已应用的迁移文件不得修改",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H03",
+      "query": "两个人同时跑数据库测试会发生什么",
+      "needle": "同一时刻只能有一份",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H04",
+      "query": "提交时为什么不能把工作区全部加入",
+      "needle": "一次全量暂存",
+      "doc": "WORKING-AGREEMENT"
+    },
+    {
+      "id": "H05",
+      "query": "查询别的租户或者不存在的资源应该怎么响应",
+      "needle": "跨租户与不存在都返回 403",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H06",
+      "query": "验证行级安全时用超级用户测可以吗",
+      "needle": "用超级用户测 RLS 等于没测",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H07",
+      "query": "撤销一个版本后多久生效",
+      "needle": "撤销立即生效",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H08",
+      "query": "公开发布需要几个审批人",
+      "needle": "公开发布必须两个不同主体",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H09",
+      "query": "没有签署 ADR 的能力应该怎么处理",
+      "needle": "fail-closed",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "H10",
+      "query": "数据库没配置的时候就绪探针返回什么",
+      "needle": "未配置 FKH_DATABASE_URL 时返回 503",
+      "doc": "README"
+    },
+    {
+      "id": "W01",
+      "query": "并行开发时 lane 是怎么划出来的",
+      "needle": "纵向切片",
+      "doc": "WORKING-AGREEMENT"
+    },
+    {
+      "id": "W02",
+      "query": "改了别人 lane 的代码需要在提交里写清楚什么",
+      "needle": "跨 lane 说明",
+      "doc": "WORKING-AGREEMENT"
+    },
+    {
+      "id": "W03",
+      "query": "共享契约以哪一份为唯一来源",
+      "needle": "单一来源",
+      "doc": "ADR-000-工程布局"
+    },
+    {
+      "id": "W04",
+      "query": "门禁能不能两个人并发执行",
+      "needle": "门禁串行化",
+      "doc": "WORKING-AGREEMENT"
+    },
+    {
+      "id": "W05",
+      "query": "迁移编号允许跳过预留号吗",
+      "needle": "允许跳号",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "O01",
+      "query": "事件投递最危险的失败模式是什么",
+      "needle": "HTTP 已成功、确认前租约过期",
+      "doc": "outbox-delivery"
+    },
+    {
+      "id": "O02",
+      "query": "死信告警接到监控系统了吗",
+      "needle": "需接入实际告警通道",
+      "doc": "outbox-delivery"
+    },
+    {
+      "id": "O03",
+      "query": "事件投递的顺序依据是什么",
+      "needle": "不按时间",
+      "doc": "outbox-delivery"
+    },
+    {
+      "id": "E01",
+      "query": "证据端点为什么不能返回 404 区分不存在",
+      "needle": "对外不可区分",
+      "doc": "evidence-locator"
+    },
+    {
+      "id": "E02",
+      "query": "required_scope 能不能从 audience 推导出来",
+      "needle": "为什么不能从 audience 反推",
+      "doc": "evidence-locator"
+    },
+    {
+      "id": "I01",
+      "query": "入库完成以后为什么只到草稿状态",
+      "needle": "为什么只到 DRAFT",
+      "doc": "ingestion"
+    },
+    {
+      "id": "C01",
+      "query": "父块恢复在什么条件下才允许",
+      "needle": "全部子块",
+      "doc": "context-assembly"
+    },
+    {
+      "id": "R01",
+      "query": "公开发布版本之前有哪些前置条件",
+      "needle": "发布前置条件",
+      "doc": "review-and-publish"
+    },
+    {
+      "id": "T01",
+      "query": "课程发布时题目版本号为什么会错位",
+      "needle": "题目按创建时的版本号入库",
+      "doc": "training"
+    },
+    {
+      "id": "X01",
+      "query": "提示注入这种威胁怎么缓解",
+      "needle": "T-5 提示注入",
+      "doc": "threat-model"
+    },
+    {
+      "id": "X02",
+      "query": "调用外部模型会不会造成数据外流",
+      "needle": "T-6 外部模型数据外流",
+      "doc": "threat-model"
+    },
+    {
+      "id": "P01",
+      "query": "切片为什么按 token 计数而不是按字符",
+      "needle": "为什么按 token 而不是字符",
+      "doc": "parsing-and-chunking"
+    },
+    {
+      "id": "P02",
+      "query": "扫描件没有文字层的时候怎么处理",
+      "needle": "PARSER_FALLBACK",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "P03",
+      "query": "PDF 解析为什么不用 PyMuPDF",
+      "needle": "AGPL-3.0",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "D01",
+      "query": "部署时对显卡和显存有什么建议",
+      "needle": "显存",
+      "doc": "DEPLOYMENT-hardware"
+    },
+    {
+      "id": "D02",
+      "query": "本地做完索引以后换到客户机器要重做吗",
+      "needle": "不需要",
+      "doc": "DEPLOYMENT-hardware"
+    },
+    {
+      "id": "A01",
+      "query": "为什么不用多包仓库结构",
+      "needle": "单包多模块",
+      "doc": "ADR-000-工程布局"
+    },
+    {
+      "id": "A02",
+      "query": "身份源 ADR 定下来了吗",
+      "needle": "未启动",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "N01",
+      "query": "知识分级和受众是怎么区分的",
+      "needle": "classification",
+      "doc": "evidence-locator"
+    },
+    {
+      "id": "N02",
+      "query": "发布事件走什么机制保证可靠投递",
+      "needle": "outbox",
+      "doc": "HANDOFF"
+    },
+    {
+      "id": "N03",
+      "query": "检索结果的片段长度上限是多少",
+      "needle": "400 个 Unicode 码点",
+      "doc": "retrieval-lexical"
+    }
+  ]
+}

@@ -37,6 +37,9 @@ dev = [
     "httpx>=0.27.2",
     "ruff>=0.7.0",
     "mypy>=1.13.0",
+    # 本地无 Docker/系统 PG 时由 conftest 起内嵌实例；CI 用外部 service 时不生效。
+    # 显式声明，避免 `uv sync` 把它当成未登记包剪掉。
+    "pgserver>=0.1.4",
 ]
 
 [build-system]
