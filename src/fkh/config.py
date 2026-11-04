@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     retrieval_lexical_top_k: int = 30
     rrf_k: int = 60
     evidence_max: int = 5
+    # 召回模式（2026-11-04 L1 判决 Q2）：默认纯词法，混合检索只能服务端显式 opt-in。
+    # 这是服务端配置，不是请求参数——调用方不能自己选择召回算法。
+    retrieval_mode: str = "lexical"       # lexical | hybrid
 
     # 检索审计：query 只以 HMAC 落库，密钥不入表
     retrieval_hash_key: str | None = None

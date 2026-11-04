@@ -22,10 +22,13 @@ from fkh.api.models import AnswerRequest, TrainingAskRequest
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_evidence import router as evidence_router
 from fkh.api.routes_review import router as review_router
+from fkh.api.routes_search import resolve_embedder
 from fkh.api.routes_search import router as search_router
 from fkh.api.routes_training import router as training_router
 from fkh.api.security import PrincipalContext, PrincipalDep, require
 from fkh.config import Settings, get_settings
+from fkh.retrieval.embedding import EmbeddingNotConfigured
+from fkh.retrieval.search import HYBRID_MODE, SCORING_BY_MODE, SearchNotConfigured
 
 # (方法, 路径, 所需权限, 说明)
 CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
@@ -141,6 +144,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=503,
                 content={"status": "down", "checks": {"database": "unreachable"}},
             )
+
+        # 混合检索是服务端显式 opt-in 的能力：配了就必须真的可用。
+        # 模型不可用时宁可 503 让编排层不导流，也不要在请求期才发现（判决 Q2）。
+        mode = settings.retrieval_mode.strip().lower()
+        if mode not in SCORING_BY_MODE:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "degraded",
+                    "checks": {"database": "ok", "retrieval": "invalid_mode"},
+                },
+            )
+        if mode == HYBRID_MODE:
+            try:
+                resolve_embedder(settings)
+            except (EmbeddingNotConfigured, SearchNotConfigured) as exc:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "degraded",
+                        "checks": {"database": "ok", "retrieval": "embedding_unavailable"},
+                        "detail": str(exc),
+                    },
+                )
+            return JSONResponse(
+                status_code=200,
+                content={"status": "ok", "checks": {"database": "ok", "retrieval": "ok"}},
+            )
+
         return JSONResponse(status_code=200, content={"status": "ok", "checks": {"database": "ok"}})
 
     _register_contract_routes(app)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import Protocol
 
 
@@ -30,7 +31,19 @@ class Embedder(Protocol):
 
 
 class EmbeddingNotConfigured(RuntimeError):
-    """请求了向量能力但没有配置模型。"""
+    """请求了向量能力但没有可用配置（未安装依赖、未配置模型、生产用了测试模型）。"""
+
+
+class EmbeddingError(RuntimeError):
+    """已配置的模型在执行期失败（权重缺失、推理异常）。
+
+    与「未配置」分开：前者是配置错误，后者是已承诺能力的故障；
+    两者都不得静默降级成词法结果（2026-11-04 L1 判决 Q2）。
+    """
+
+
+# 允许使用测试 embedder 的环境。生产必须拒绝：伪向量会让召回质量与验收结论失真。
+NON_PRODUCTION_ENVS = frozenset({"local", "dev", "test", "ci"})
 
 
 class DeterministicTestEmbedder:
@@ -86,39 +99,72 @@ class BGEM3Embedder:
                 "未安装 embedding 可选依赖，执行 `uv sync --extra embedding` 后再启用"
             ) from exc
 
-        # local_files_only=True：只读本地缓存，绝不因缺权重而偷偷联网拉取
-        self._model = SentenceTransformer(self.model_id, device=device)
+        try:
+            # 只读本地缓存：缺权重时报错，绝不因为少一个文件就偷偷联网拉取
+            self._model = SentenceTransformer(self.model_id, device=device, local_files_only=True)
+        except Exception as exc:  # noqa: BLE001 - 底层可能抛 OSError/RuntimeError/HTTPError
+            raise EmbeddingError(
+                f"加载本地模型 {self.model_id} 失败（权重是否已下载到本机缓存？）：{exc}"
+            ) from exc
         self._device = device
         self._batch_size = batch_size
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
-        vectors = self._model.encode(
-            list(texts),
-            batch_size=self._batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
+        try:
+            vectors = self._model.encode(
+                list(texts),
+                batch_size=self._batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 推理失败必须显式上报
+            raise EmbeddingError(f"{self.model_id} 批量推理失败：{exc}") from exc
         return [list(map(float, vector)) for vector in vectors]
 
     def embed_query(self, text: str) -> list[float]:
-        vector = self._model.encode(
-            [text], normalize_embeddings=True, show_progress_bar=False
-        )[0]
+        try:
+            vector = self._model.encode(
+                [text], normalize_embeddings=True, show_progress_bar=False
+            )[0]
+        except Exception as exc:  # noqa: BLE001
+            raise EmbeddingError(f"{self.model_id} 查询推理失败：{exc}") from exc
         return list(map(float, vector))
 
 
-def build_embedder(provider: str, *, device: str = "cpu") -> Embedder | None:
-    """按配置构造 embedder。`none` 返回 None，表示不生成向量。"""
+def build_embedder(
+    provider: str, *, device: str = "cpu", batch_size: int = 8, env: str = "local"
+) -> Embedder | None:
+    """按配置构造 embedder。`none` 返回 None，表示不生成向量。
+
+    生产环境拒绝 `test`：确定性伪向量只用于验证工程链路，
+    一旦出现在生产配置里，召回质量与验收结论都会失真。
+    """
     normalized = provider.strip().lower()
     if normalized in {"", "none"}:
         return None
     if normalized == "test":
+        if env.strip().lower() not in NON_PRODUCTION_ENVS:
+            raise EmbeddingNotConfigured(
+                f"embedding_provider=test 仅限 {sorted(NON_PRODUCTION_ENVS)} 环境，当前 env={env}"
+            )
         return DeterministicTestEmbedder()
     if normalized in {"bge-m3", "bgem3"}:
-        return BGEM3Embedder(device=device)
+        return BGEM3Embedder(device=device, batch_size=batch_size)
     raise EmbeddingNotConfigured(f"未知的 embedding provider：{provider}")
+
+
+@lru_cache(maxsize=8)
+def _cached_embedder(provider: str, device: str, batch_size: int, env: str) -> Embedder | None:
+    """模型加载是秒级甚至十秒级操作，按配置缓存；失败不缓存（配置修好后可重试）。"""
+    return build_embedder(provider, device=device, batch_size=batch_size, env=env)
+
+
+def get_embedder(
+    provider: str, *, device: str = "cpu", batch_size: int = 8, env: str = "local"
+) -> Embedder | None:
+    return _cached_embedder(provider.strip().lower(), device, batch_size, env.strip().lower())
 
 
 def to_pgvector(vector: Sequence[float]) -> str:

@@ -21,7 +21,7 @@
 | A · 采集与治理 | 解析、切片、入库、审核发布、ACL | 已完成，等待草稿终止裁决 | `16248f2` `6803710` `82eec2e` |
 | B · 事件投递 | outbox 租约、令牌、死信、重放 | 已完成，告警未接线 | `b93a61b` |
 | C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | `62f0f34`（0007） |
-| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 链路完成；真实 BGE-M3 未接入（等硬件） | `a60755a`（0008）+ 本轮 |
+| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` 服务端 opt-in；真实 BGE-M3 未接入（缺模型即 503） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
 | F · 培训 | 建课、出题、发布、分派、测验判分、进度 | 完成；签核与反馈未做 | 本轮 |
@@ -31,7 +31,7 @@
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups
-uv run pytest -q                 # 274 项，本地自动起 pgserver
+uv run pytest -q                 # 356 项，本地自动起 pgserver（同一时刻只能跑一份，见 §8.11）
 uv run ruff check src tests migrations
 uv run mypy
 uv run uvicorn fkh.api.main:app --port 8000
@@ -76,10 +76,13 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0008 | 检索审计：retrieval_queries（HMAC 摘要） | 已应用（本机） |
 | 0009 | 切片词法分词器版本列（拆开 `tokenizer_id` 与 `lexeme_tokenizer_id`） | 已应用（本机） |
 | **0010** | **预留给草稿终止路径（待裁决）** | 占位 |
+| 0011 | 检索审计补 `retrieval_mode`（lexical-v1 / hybrid-rrf-v1 / not_executed） | 已应用（本机，回滚/重放已演练） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
 > `schema_migrations` 的历史记录与文件名对不上。
+> 0011 同理跳过了预留号 0010：`apply.py` 按文件名顺序应用，允许预留号缺席；
+> 但**回滚 N 步时 0010 一旦仍缺文件，回滚会显式失败**——这是刻意的，不静默跳过。
 
 **已应用的迁移文件不得修改**：`migrations/apply.py` 对已应用文件做校验和比对，改动会被判为漂移并拒绝执行。
 
@@ -91,6 +94,12 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 4. **撤销立即生效**，不等待索引清理；检索侧必须按状态过滤，不能只依赖向量是否删除。
 5. **RLS 测试必须用 `SET ROLE` 降级到无 BYPASSRLS 角色**；用超级用户测 RLS 等于没测。
 6. **未签 ADR 的能力必须 fail-closed**：无 OCR 就标 `PARSER_FALLBACK`，无对象存储就返回 `signed_url_state=NOT_CONFIGURED`，不猜默认值。
+7. **混合检索只能服务端 opt-in**：`FKH_RETRIEVAL_MODE` 默认 `lexical`，且它不是请求参数；
+   显式启用后缺模型/权重/推理失败一律 503，**不得静默降级**成词法结果（判决 Q2）。
+8. **`/v1/knowledge/context` 固定词法**：即使 search 已启用混合，context 也不跟随；
+   接混合会改变拒答分档，须另行送审（判决 Q7）。
+9. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
+   `build_embedder` 按 `FKH_ENV` 直接拒绝。
 
 ## 7. 未裁决事项
 
@@ -101,7 +110,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 检索的可见性口径与审计表 | 已裁决：应用层 ACL + `retrieval_queries`（0008），不做 ACL 下推 | `docs/SPEC/retrieval-lexical.md` |
 | ADR-01 对象存储与区域 | 签名链接、备份位置 | 未启动 |
 | ADR-02 身份源 | 令牌 claim 结构（含 groups/departments） | 未启动 |
-| ADR-04/06 Embedding 模型 | 真实 tokenizer、向量维度 | 阻塞向量检索与问答生成 |
+| ADR-04/06 Embedding 模型 | 真实 tokenizer、硬件基线、真实语料 recall | 接线已完成（`_evidence/l1_reply_hybrid_wiring_20261104.md`，0011）：默认词法、混合 opt-in、契约 `scoring` 改 enum；真实 BGE-M3 未装、recall 未测，**生产启用未授权**；问答生成仍阻塞 |
 | ADR-08 质量阈值 | RAG Triad 门禁值 | 阻塞验收 |
 
 ## 8. 已知坑（踩过的，别再踩）
@@ -118,6 +127,13 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
    必须用自定义 `RequestValidationError` 处理器收敛成固定文案，否则明文会进响应、前端日志与 APM。
 10. outbox relay 的时间判断一律用 `clock_timestamp()`：`now()` 是**事务开始时间**，
     长连接下会落后于真实时间，表现为「事件到期了却领不到」。
+11. **同一时刻只能有一份 `pytest` 在跑**。两条 lane 同时跑会共用同一个 pgserver 实例/端口：
+    实测 3 次重叠都表现为「几分钟甚至十几分钟不结束」或大批 `requires_pg` fixture 报错
+    （其中一次报 `postgres.exe` 绑定 127.0.0.1 被拒，容易被误判成安全策略拦截；
+    同一份代码单独跑是 15 秒 339 项全绿）。**先确认没有别的 pytest 在跑，再起门禁。**
+12. 提交一律用**显式路径**（`git add src/... tests/...`），禁止 `git add -A`：
+    并行 lane 的工作区里有他人的未提交改动、pgdata 与 pytest 临时文件，
+    一次 `-A` 就会把它们带进提交（2026-11-04 曾因此把 42MB 测试库提交进 `827ba1a`）。
 
 ## 9. 合并前检查
 

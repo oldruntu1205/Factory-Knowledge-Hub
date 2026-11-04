@@ -70,14 +70,18 @@
 | 向量召回（按 model_id 隔离） | ✅ |
 | RRF 融合（词法 + 向量） | ✅ |
 | 融合后 ACL 补齐 | ✅ |
-| 真实 BGE-M3 推理 | ⬜ 未接入（可选依赖未安装） |
+| HTTP 接线（服务端 opt-in） | ✅ 2026-11-04：默认 `lexical`，`FKH_RETRIEVAL_MODE=hybrid` 才启用；`/v1/knowledge/context` 固定词法（判决 Q7） |
+| 真实 BGE-M3 推理 | ⬜ 未接入（可选依赖未安装）；接线后缺模型/权重/推理失败一律 503，不静默降级 |
 | 真实语料 recall 实测 | ⬜ 未做 |
+| 生产启用 | ⬜ 未授权（判决 Q2：真实模型验证与代表性语料评估完成前不授权生产启用） |
 
 链路用 `DeterministicTestEmbedder`（哈希伪向量）验证过：它没有语义能力，
-但足以证明**写入、隔离、双路召回、融合去重、融合后鉴权**这些工程环节是通的。
+但足以证明**写入、隔离、双路召回、融合去重、融合后鉴权、模式上报与审计一致**这些工程环节是通的。
+生产环境会**拒绝** `test` provider（`build_embedder` 按 `FKH_ENV` 校验），避免伪向量污染验收结论。
 
 真实模型接入只需：`uv sync --extra embedding` → `FKH_EMBEDDING_PROVIDER=bge-m3`
-→ 重新入库（或在已有数据上跑一次回填）。
+→ `FKH_RETRIEVAL_MODE=hybrid` → 重新入库（或在已有数据上跑一次回填）。
+接线与契约变更的落实见 `docs/SPEC/retrieval-lexical.md` §9–§10。
 
 ## 8. 混合检索的两个设计点
 

@@ -25,6 +25,7 @@ from fkh.api.security import PrincipalDep
 from fkh.config import Settings, get_settings
 from fkh.retrieval.context import assemble_context
 from fkh.retrieval.search import (
+    LEXICAL_MODE,
     SearchContext,
     SearchNotConfigured,
     SearchScopeNotAuthorized,
@@ -52,9 +53,10 @@ def context(
         conn,
         hash_key=settings.retrieval_hash_key,
         hash_key_id=settings.retrieval_hash_key_id,
+        rrf_k=settings.rrf_k,
     )
     try:
-        hits = service.search(
+        result = service.search(
             payload.query,
             knowledge_scope=payload.knowledge_scope,
             max_results=payload.max_results,
@@ -65,6 +67,9 @@ def context(
                 allowed_scopes=context.allowed_scopes,
                 trace_id=trace_id,
             ),
+            # 判决 Q7：本切片只授权 search 启用混合；context 的候选来源会改变拒答分档，
+            # 在真实模型与证据质量未验证前固定为词法，接混合须另行送审并补分档回归。
+            retrieval_mode=LEXICAL_MODE,
         )
     except SearchScopeNotAuthorized as exc:
         raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"knowledge_scope 未授权: {exc}") from exc
@@ -74,7 +79,7 @@ def context(
     assembly = assemble_context(
         conn,
         context.tenant_id,
-        hits,
+        result.hits,
         context.to_subject(),
         max_blocks=payload.max_blocks,
         max_tokens=payload.max_tokens,
