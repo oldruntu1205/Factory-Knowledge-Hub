@@ -85,7 +85,7 @@ def hit_at_k(texts: Sequence[str], needle: str, k: int) -> bool:
     return any(needle in text for text in texts[:k])
 
 
-def summarize(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def summarize(rows: Sequence[dict[str, Any]], *, k: int = 10) -> dict[str, Any]:
     """汇总：两路 recall@k 与平均耗时。空输入直接报错，不让 0/0 变成 0。"""
     if not rows:
         raise ValueError("没有评测结果")
@@ -102,6 +102,37 @@ def summarize(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "avg_lexical_ms": round(_avg(row["lexical_ms"] for row in rows), 1),
         "avg_hybrid_ms": round(_avg(row["hybrid_ms"] for row in rows), 1),
     }
+    # 精度：P@K 与「实际返回精度」（按文档级相关性代理计算，两路同尺）。
+    # 没有相关性字段的行（早期/精简结果）跳过精度段，避免把缺失当成 0。
+    if all("lexical_relevant" in row and "hybrid_relevant" in row for row in rows):
+        summary["lexical_p_at_k"] = round(
+            _avg(precision_at_k(row["lexical_relevant"], k) for row in rows), 4
+        )
+        summary["hybrid_p_at_k"] = round(
+            _avg(precision_at_k(row["hybrid_relevant"], k) for row in rows), 4
+        )
+        summary["lexical_precision_returned"] = round(
+            _avg(
+                value
+                for row in rows
+                if (value := precision_returned(row["lexical_relevant"], row["lexical_returned"]))
+                is not None
+            ),
+            4,
+        )
+        summary["hybrid_precision_returned"] = round(
+            _avg(
+                value
+                for row in rows
+                if (value := precision_returned(row["hybrid_relevant"], row["hybrid_returned"]))
+                is not None
+            ),
+            4,
+        )
+        summary["worst_hybrid_precision"] = round(
+            min(precision_at_k(row["hybrid_relevant"], k) for row in rows), 4
+        )
+
     # 文档级召回：不惩罚切片位置，只看有没有找回正确的那一篇文档
     if all("lexical_doc_hit" in row for row in rows):
         summary["lexical_doc_recall"] = round(
@@ -111,6 +142,31 @@ def summarize(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
             sum(1 for row in rows if row["hybrid_doc_hit"]) / total, 4
         )
     return summary
+
+
+def _relevant_count(docs: Sequence[str], target: str | None, k: int) -> int:
+    """文档级相关性代理：命中块是否来自含正确答案的那篇文档。
+
+    这是**代理指标**，不是人工逐条相关性标注：同一篇文档里也可能有与该问题无关的段落，
+    因此它高估真实精度、但界限一致（两路用同一把尺）。
+    """
+    if not target:
+        return 0
+    return sum(1 for doc in docs[:k] if doc == target)
+
+
+def precision_at_k(relevant: int, k: int) -> float:
+    """P@K：相关条数 / K，缺位按不相关计（L1 2026-11-04 要求的口径）。"""
+    if k <= 0:
+        raise ValueError("k 必须为正整数")
+    return relevant / k
+
+
+def precision_returned(relevant: int, returned: int) -> float | None:
+    """实际返回精度：相关条数 / 实际返回条数；空结果单列（返回 None 而不是 0）。"""
+    if returned <= 0:
+        return None
+    return relevant / returned
 
 
 def _avg(values: Iterable[float]) -> float:
@@ -268,6 +324,10 @@ def evaluate(
                 "lexical_top": lexical_texts[:k],
                 "hybrid_top": hybrid_texts[:k],
                 "doc": case.doc,
+                "lexical_returned": len(lexical_texts[:k]),
+                "hybrid_returned": len(hybrid_texts[:k]),
+                "lexical_relevant": _relevant_count(lexical_docs, case.doc, k),
+                "hybrid_relevant": _relevant_count(hybrid_docs, case.doc, k),
                 "lexical_doc_hit": bool(case.doc) and case.doc in lexical_docs[:k],
                 "hybrid_doc_hit": bool(case.doc) and case.doc in hybrid_docs[:k],
             }
@@ -329,7 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit("--embedder none 无法评测混合模式")
         rows = evaluate(conn, tenant, principal, cases, embedder, k=args.k, rrf_k=args.rrf_k)
 
-    summary = summarize(rows)
+    summary = summarize(rows, k=args.k)
     summary["k"] = args.k
     _print_table(summary, rows)
     if args.output:

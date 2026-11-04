@@ -29,6 +29,7 @@ import psycopg
 from fkh.authz.policy import Subject
 from fkh.retrieval.embedding import Embedder, EmbeddingError
 from fkh.retrieval.hybrid import HybridRetriever
+from fkh.retrieval.lexical import SCORING as LEXICAL_SCORING
 from fkh.retrieval.lexical import LexicalRetriever, SearchHit, SearchOutcome
 
 REFUSAL_SCOPE_NOT_AUTHORIZED = "SCOPE_NOT_AUTHORIZED"
@@ -38,7 +39,8 @@ ERROR_EMBEDDING_UNAVAILABLE = "EMBEDDING_UNAVAILABLE"
 # 召回模式 → 响应里的 scoring 取值。两者必须一一对应：响应要如实标识实际执行的算法。
 LEXICAL_MODE = "lexical"
 HYBRID_MODE = "hybrid"
-SCORING_BY_MODE = {LEXICAL_MODE: "lexical-v1", HYBRID_MODE: "hybrid-rrf-v1"}
+# 词法的 scoring 取自 lexical.SCORING（lexical-v2），避免两处字符串各自漂移。
+SCORING_BY_MODE = {LEXICAL_MODE: LEXICAL_SCORING, HYBRID_MODE: "hybrid-rrf-v1"}
 # 审计里表示「召回前就被拒绝、没有执行任何算法」的取值（与 scoring 枚举同表，见迁移 0011）
 MODE_NOT_EXECUTED = "not_executed"
 

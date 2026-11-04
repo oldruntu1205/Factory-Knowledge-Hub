@@ -19,7 +19,7 @@
 SQL（硬条件）：tenant_id = 当前租户
               AND chunk_kind = 'child'          ← parent 不是普通命中
               AND tokenizer_id = 'cjk-char-v1'  ← 分词器必须与写入一致
-              AND lexeme @@ plainto_tsquery('simple', segment_cjk(query))
+              AND lexeme @@ websearch_to_tsquery('simple', build_query(query))
               AND version.required_scope = :knowledge_scope（精确匹配，NULL 不可见）
               AND (APPROVED_INTERNAL/internal) OR (PUBLISHED_PUBLIC/customer_public)
 ORDER BY ts_rank_cd DESC, chunk_id LIMIT max_results × 4（上限 200）
@@ -90,7 +90,10 @@ parent 的文本聚合了它全部 child。即使不做「恢复」，直接返�
 ## 6. 分词语义（必须与索引一致）
 
 - 写入与查询都用 `cjk-char-v1`：CJK 字符间插空格 + `to_tsvector('simple', …)`；
-- 查询侧统一 `plainto_tsquery`，**不手拼 tsquery**：`& | ! ( ) :` 会被当作普通字符处理；
+- 查询侧统一 `websearch_to_tsquery('simple', build_query(query))`：**字级 OR** 组合、
+  每个词项加双引号（裸 `-word` / `or` / 未闭合引号都不会改变语义）、**不手拼 tsquery**；
+- **2026-11-04 修正**：此前用 `plainto_tsquery` 把每个汉字 AND 起来，自然语言问句几乎必然零命中
+  （50 条测评题 recall@10 = 0.06）；改 OR 后同语料同评测集为 0.68，`scoring` 升级为 `lexical-v2`。
 - 字级 AND 的代价：查询「撤权」= 撤 AND 权，会命中「撤销权限」；
 - 换分词器必须重建 `lexeme` 并同步 `tokenizer_id`，否则永远匹配不上（本轮 SQL 已固定该值）。
 
@@ -154,7 +157,18 @@ hybrid：向量路（pgvector 余弦，tenant/scope/状态/model_id 过滤，LIM
 | Q4 接受应用层 ACL，不加逐请求越权计数 | 融合后判定；单测覆盖两路命中与重复命中 |
 | Q5 保留两路深度不对称 | 向量 `min(max×4,200)`、词法 `max`；测试固定该公式 |
 | Q6 授权 L2 同步改契约与断言 | 契约 + `tests/e2e/test_search_hybrid_api.py`（17 项）+ 本切片终审 |
-| Q7 context 保持词法 | `routes_context` 显式传 `LEXICAL_MODE`；测试断言审计模式为 `lexical-v1` |
+| Q7 context 保持词法 | `routes_context` 显式传 `LEXICAL_MODE`；测试断言审计模式与词法 scoring 一致 |
+
+### 10.1 2026-11-04 追加判决：词法查询由 AND 改为 OR（裁决 A）
+
+| 判决 | 落实 |
+|---|---|
+| A. OR + `ts_rank_cd`，不引入阈值、不改索引 | `domain/lexeme.build_query` + `websearch_to_tsquery`；迁移 0012 扩展审计枚举 |
+| `scoring` 采用 `lexical-v2` | `lexical.SCORING` + 契约 enum（v1 为历史取值） |
+| 空白/纯标点/无有效词项 → 空结果 | `build_query` 丢弃无字母数字的 token；单测 8 项 |
+| 召回回归门槛（本评测集 ≥33/50） | 实测 34/50，原先命中的 3 条无退化（`recall-benchmark.md`） |
+| 精度证据（P@K / 实际返回精度） | 已补：P@10 0.162（词法）/ 0.232（混合），文档级代理口径 |
+| 精度下限 | **未定**，由 L1 在查看精度结果后设定；未达标前不批准生产发布 |
 
 > **终审结论（2026-11-04）**：`_evidence/l1_reply_hybrid_wiring_final_20261104.md` 提出两项修改
 > （迁移跳号回滚、回填原子性证据），落实于 `302c367` 后经 `_evidence/l1_reply_hybrid_wiring_rereview_20261104.md`

@@ -21,7 +21,7 @@
 | A · 采集与治理 | 解析、切片、入库、审核发布、ACL | 已完成，等待草稿终止裁决 | `16248f2` `6803710` `82eec2e` |
 | B · 事件投递 | outbox 租约、令牌、死信、重放 | 已完成，告警未接线 | `b93a61b` |
 | C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | `62f0f34`（0007） |
-| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；仓库文档语料 50 题 recall@10：词法 0.06 / OR 变体 0.66 / 混合 0.80（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
+| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
 | F · 培训 | 建课、出题、发布、分派、测验判分、进度 | 完成；签核与反馈未做 | 本轮 |
@@ -77,6 +77,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0009 | 切片词法分词器版本列（拆开 `tokenizer_id` 与 `lexeme_tokenizer_id`） | 已应用（本机） |
 | **0010** | **预留给草稿终止路径（待裁决）** | 占位 |
 | 0011 | 检索审计补 `retrieval_mode`（lexical-v1 / hybrid-rrf-v1 / not_executed） | 已应用（本机，回滚/重放已演练） |
+| 0012 | 审计枚举补 `lexical-v2`（词法查询 AND→OR） | 已应用（本机） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
@@ -101,7 +102,9 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
    显式启用后缺模型/权重/推理失败一律 503，**不得静默降级**成词法结果（判决 Q2）。
 8. **`/v1/knowledge/context` 固定词法**：即使 search 已启用混合，context 也不跟随；
    接混合会改变拒答分档，须另行送审（判决 Q7）。
-9. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
+9. **词法查询必须保持 OR**：字级 token 用 AND 组合会让自然语言问句几乎零命中（实测 0.06）；
+   改这里必须重跑 `docs/SPEC/recall-benchmark.md` 的回归门槛并同步 `scoring` 版本。
+10. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
    `build_embedder` 按 `FKH_ENV` 直接拒绝。
 
 ## 7. 未裁决事项

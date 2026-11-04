@@ -225,11 +225,12 @@ paths:
       tags: [knowledge]
       summary: 权限过滤检索
       description: >-
-        默认词法检索（cjk-char-v1 分词 + ts_rank_cd 排序）；服务端可用
+        默认词法检索（cjk-char-v1 字级 **OR** 召回 + ts_rank_cd 排序；2026-11-04 起查询构造
+        由逐字 AND 改为 OR，同一评测集 recall@10 从 0.06 提升到 0.68）；服务端可用
         FKH_RETRIEVAL_MODE=hybrid 启用「向量 + 词法 RRF 融合」（向量由本地 BGE-M3 生成，
         不调用任何外部服务），召回模式不是请求参数，客户端只能从响应 scoring 观察。
-        启用混合后 scoring 取值集合由 lexical-v1 扩大为 lexical-v1 | hybrid-rrf-v1，
-        按旧 const 校验的调用方必须放宽断言——这是**有意的破坏性契约变更**。
+        scoring 取值集合为 lexical-v2 | hybrid-rrf-v1（lexical-v1 为 2026-11-04 之前的历史取值，
+        不再返回）：按旧 const 校验的调用方必须放宽断言——这是**有意的破坏性契约变更**。
         max_results 是返回上限，不保证填满：候选窗口内被 ACL 拒绝的条数越多，返回越少。
         空结果与「都无权限」不可区分（同为 200 + 空数组），但缺少接口权限或范围未授权仍返回 403。
         显式启用混合但模型未安装/权重缺失/推理失败时返回 503，不静默降级成词法结果。

@@ -26,7 +26,7 @@ from uuid import UUID
 import psycopg
 
 from fkh.authz.policy import AclPolicy, Decision, Subject, evaluate
-from fkh.domain.lexeme import QUERY_FUNCTION, segment_cjk
+from fkh.domain.lexeme import QUERY_FUNCTION, build_query
 
 # 分词器必须是写入 lexeme 时使用的同一个；换分词器要重建索引，否则永远匹配不上
 # 生成 lexeme 的分词器版本，对应 knowledge_chunks.lexeme_tokenizer_id。
@@ -37,7 +37,9 @@ TOKENIZER_ID = "cjk-char-v1"
 OVERFETCH = 4
 MAX_CANDIDATES = 200
 SNIPPET_CODE_POINTS = 400
-SCORING = "lexical-v1"
+# 查询构造由「逐字 AND」改为「字级 OR」（2026-11-04 L1 裁决 A）。
+# 候选集合实质变化，版本号必须能区分新旧语义（判决 Q1：采用 lexical-v2）。
+SCORING = "lexical-v2"
 
 # 可见性谓词：租户、范围、状态三件套。词法与向量两路必须用同一份，
 # 否则会出现"词法查得到、向量查不到"或反过来的口径漂移。
@@ -104,9 +106,10 @@ class LexicalRetriever:
         max_results: int = 10,
     ) -> SearchOutcome:
         self._bind_tenant()
-        ts_query = segment_cjk(query)
+        ts_query = build_query(query)
         if not ts_query:
-            # 纯空白/标点：分词后没有词项。不把空 tsquery 交给数据库，直接空结果
+            # 纯空白/标点：没有有效词项。不把空 tsquery 交给数据库，直接空结果；
+            # 绝不能退化成「匹配所有内容」。
             return SearchOutcome(hits=(), candidates=0, filtered_out=0)
 
         limit = min(max_results * OVERFETCH, MAX_CANDIDATES)

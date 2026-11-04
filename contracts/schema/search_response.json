@@ -38,8 +38,8 @@
     },
     "scoring": {
       "type": "string",
-      "enum": ["lexical-v1", "hybrid-rrf-v1"],
-      "description": "本次实际执行的召回模式：lexical-v1 = 纯词法（cjk-char-v1 + ts_rank_cd）；hybrid-rrf-v1 = 向量+词法 RRF 融合。由服务端配置决定（FKH_RETRIEVAL_MODE），客户端只能观察不能选择。"
+      "enum": ["lexical-v2", "hybrid-rrf-v1"],
+      "description": "本次实际执行的召回模式：lexical-v2 = 纯词法（字级 OR 召回 + ts_rank_cd 排序；2026-11-04 起词法查询由 AND 改 OR，v1 为历史取值不再返回）；hybrid-rrf-v1 = 向量+词法 RRF 融合。由服务端配置决定（FKH_RETRIEVAL_MODE），客户端只能观察不能选择。"
     },
     "trace_id": { "type": "string", "minLength": 1 }
   }
