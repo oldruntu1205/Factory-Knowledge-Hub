@@ -44,6 +44,8 @@ VERSION_EVENT_ORDINAL: dict[str, int] = {
     "knowledge.version.approved.v1": 0,
     "knowledge.version.published.v1": 1,
     "knowledge.version.revoked.v1": 2,
+    # 弃用与撤销互斥（同一版本只会走其中一条），但独立成事件，序号排在撤销之后
+    "knowledge.version.discarded.v1": 3,
 }
 
 
@@ -227,6 +229,42 @@ class ReviewService:
         )
         return self.snapshot(version_id)
 
+    def discard(self, version_id: UUID, actor_id: UUID, reason: str | None = None) -> VersionSnapshot:
+        """作废一个从未对外发布的版本（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL）。
+
+        幂等：已经是 DISCARDED 时直接返回快照，**不产生**新的审计与事件——
+        否则重复点击会在审计里堆出一串同义记录。
+        """
+        self._bind_tenant()
+        version = self.lock(version_id)
+        if version.status is VersionStatus.DISCARDED:
+            return self.snapshot(version_id)
+
+        action = assert_transition(version.status, VersionStatus.DISCARDED)
+        self._conn.execute(
+            "UPDATE knowledge_versions SET status = %s WHERE tenant_id = %s AND id = %s",
+            (VersionStatus.DISCARDED.value, self._tenant, version_id),
+        )
+        # 审批人不清理：从 APPROVED_INTERNAL 弃用时，审批是已发生的历史事实（裁决 Q4）
+        self._record(
+            version_id,
+            actor_id,
+            action.value,
+            reason,
+            from_status=version.status.value,
+        )
+        self._emit(
+            event_type="knowledge.version.discarded.v1",
+            aggregate_id=version_id,
+            aggregate_version=version.version_no,
+            payload={
+                "version_id": str(version_id),
+                "audience": version.audience,
+                "from_status": version.status.value,
+            },
+        )
+        return self.snapshot(version_id)
+
     # ---- 内部 --------------------------------------------------------------
     def _transition(
         self,
@@ -242,11 +280,20 @@ class ReviewService:
         )
         self._record(version.id, actor_id, action.value, reason)
 
-    def _record(self, version_id: UUID, actor_id: UUID, action: str, reason: str | None) -> None:
+    def _record(
+        self,
+        version_id: UUID,
+        actor_id: UUID,
+        action: str,
+        reason: str | None,
+        *,
+        from_status: str | None = None,
+    ) -> None:
         self._conn.execute(
-            """INSERT INTO review_actions (tenant_id, version_id, actor_id, action, reason)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (self._tenant, version_id, actor_id, action, reason),
+            """INSERT INTO review_actions
+                 (tenant_id, version_id, actor_id, action, reason, from_status)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (self._tenant, version_id, actor_id, action, reason, from_status),
         )
 
     def _current_generation(self, version_id: UUID) -> int:

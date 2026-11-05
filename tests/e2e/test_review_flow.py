@@ -169,13 +169,14 @@ def test_revoked_version_cannot_be_reapproved(
     app_conn.rollback()
 
 
-def test_draft_cannot_be_revoked_pending_adr(
+def test_draft_cannot_be_revoked_but_can_be_discarded(
     app_conn: psycopg.Connection[Any], seed: dict[str, str]
 ) -> None:
-    """DRAFT 目前没有终止路径，这是 L1 §3.2 未定义的缺口。
+    """草稿的终止路径是"弃用"，不是"撤销"（2026-11-05 L1 裁决 B）。
 
-    这里固定当前行为，避免有人"顺手"加一条 DRAFT→REVOKED 迁移表项而绕过架构裁决。
-    方案与影响见 docs/REVIEW-REQUEST-draft-termination.md。
+    两条约束都要保住：
+    1. `DRAFT -> REVOKED` 仍然必须被拒绝——撤销表示"曾对外可见后撤回"，草稿从未可见；
+    2. `DRAFT -> DISCARDED` 可用，这才是草稿的正确出口。
     """
     from fkh.domain.state_machine import IllegalTransition
 
@@ -185,6 +186,10 @@ def test_draft_cannot_be_revoked_pending_adr(
     with pytest.raises(IllegalTransition):
         service.revoke(version_id, UUID(seed["user_a"]))
     app_conn.rollback()
+
+    discarded = service.discard(version_id, UUID(seed["user_a"]), "传错文件")
+    app_conn.commit()
+    assert discarded.status is VersionStatus.DISCARDED
 
 
 def test_review_requires_draft_state(

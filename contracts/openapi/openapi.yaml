@@ -155,6 +155,7 @@ paths:
       description: |
         PASS 提交审核（DRAFT→REVIEWED）；APPROVE_INTERNAL 批准内部可用（REVIEWED→APPROVED_INTERNAL）；
         REJECT 退回草稿（REVIEWED/APPROVED_INTERNAL→DRAFT，同时清空审批人）。
+        作废走独立端点 `/v1/knowledge/{knowledge_id}/discard`（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL→DISCARDED）。
       parameters:
         - $ref: "#/components/parameters/KnowledgeId"
       requestBody:
@@ -219,6 +220,27 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { description: 版本已撤销或状态不允许撤销 }
+
+  /v1/knowledge/{knowledge_id}/discard:
+    post:
+      tags: [knowledge]
+      summary: 作废未对外发布的版本
+      description: >-
+        把从未对外发布的版本作废（DISCARDED）：允许 RAW / DRAFT / REVIEWED / APPROVED_INTERNAL；
+        PUBLISHED_PUBLIC / SUPERSEDED 不允许（曾对外可见，须走撤销）。弃用立即生效，
+        后续检索与证据端点不再返回该版本。同一版本重复弃用为幂等操作，不产生新的审计与事件。
+        权限沿用 knowledge.revoke（弃用只收回可用性，不授予发布资格）。
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeId"
+        - name: reason
+          in: query
+          required: false
+          schema: { type: string, maxLength: 500 }
+      responses:
+        "200": { description: 已作废（重复请求同样返回 200） }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: 当前状态不允许作废（曾发布或已终止） }
 
   /v1/knowledge/search:
     post:

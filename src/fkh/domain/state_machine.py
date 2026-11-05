@@ -21,6 +21,9 @@ class VersionStatus(StrEnum):
     PUBLISHED_PUBLIC = "PUBLISHED_PUBLIC"
     SUPERSEDED = "SUPERSEDED"
     REVOKED = "REVOKED"
+    # 从未公开发布、主动作废（2026-11-05 L1 裁决 B）。与 REVOKED 的区别是审计语义：
+    # DISCARDED 的版本从未对外可见；REVOKED 是曾发布/批准后撤回。
+    DISCARDED = "DISCARDED"
 
 
 class ReviewAction(StrEnum):
@@ -34,6 +37,7 @@ class ReviewAction(StrEnum):
     PUBLISH = "PUBLISH"
     SUPERSEDE = "SUPERSEDE"
     REVOKE = "REVOKE"
+    DISCARD = "DISCARD"
 
 
 class IllegalTransition(ValueError):
@@ -53,9 +57,16 @@ _TRANSITIONS: dict[tuple[VersionStatus, VersionStatus], ReviewAction] = {
     (VersionStatus.PUBLISHED_PUBLIC, VersionStatus.SUPERSEDED): ReviewAction.SUPERSEDE,
     (VersionStatus.PUBLISHED_PUBLIC, VersionStatus.REVOKED): ReviewAction.REVOKE,
     (VersionStatus.SUPERSEDED, VersionStatus.REVOKED): ReviewAction.REVOKE,
+    # 弃用：只允许从未对外发布的状态进入 DISCARDED；PUBLISHED_PUBLIC / SUPERSEDED 必须走 REVOKED
+    (VersionStatus.RAW, VersionStatus.DISCARDED): ReviewAction.DISCARD,
+    (VersionStatus.DRAFT, VersionStatus.DISCARDED): ReviewAction.DISCARD,
+    (VersionStatus.REVIEWED, VersionStatus.DISCARDED): ReviewAction.DISCARD,
+    (VersionStatus.APPROVED_INTERNAL, VersionStatus.DISCARDED): ReviewAction.DISCARD,
 }
 
+# 终态集合：撤销与弃用都不可再迁移。保留 TERMINAL_STATUS 作为历史别名（REVOKED）以兼容旧调用。
 TERMINAL_STATUS = VersionStatus.REVOKED
+TERMINAL_STATUSES = frozenset({VersionStatus.REVOKED, VersionStatus.DISCARDED})
 
 
 def can_transition(source: VersionStatus, target: VersionStatus) -> bool:

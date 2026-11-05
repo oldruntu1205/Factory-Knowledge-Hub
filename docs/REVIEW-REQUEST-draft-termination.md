@@ -1,5 +1,11 @@
 # 审查请求：DRAFT 状态的终止路径缺失
 
+> **状态（2026-11-05）：已裁决。** 采纳**方案 B**：新增 `DISCARDED`（从未公开发布、主动作废），
+> 允许 `RAW / DRAFT / REVIEWED / APPROVED_INTERNAL` 进入；`PUBLISHED_PUBLIC / SUPERSEDED` 必须走撤销；
+> 迁移 `0013`，事件 `knowledge.version.discarded.v1`，培训课程同步转 `NEEDS_REVIEW`。
+> 回执：`_evidence/l1_reply_discarded_status_20261105.md`；实现见 `tests/e2e/test_discard_flow.py`。
+> 下文为原始请求，保留作决策记录。
+
 - **提出日期**：2026-11-03
 - **提出方**：L2 实施
 - **需裁决方**：L1 架构 / 业务负责人

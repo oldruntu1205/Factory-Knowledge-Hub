@@ -325,6 +325,8 @@ class TrainingService:
                  JOIN training_courses c
                    ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
                 WHERE a.tenant_id = %s AND a.learner_subject_id = %s
+                  -- 课程因知识被撤销/弃用而转 NEEDS_REVIEW 后，学员侧不再展示该任务
+                  AND c.status = 'PUBLISHED'
                 ORDER BY a.assigned_at DESC""",
             (self._tenant, learner_subject_id),
         ).fetchall()
@@ -357,7 +359,7 @@ class TrainingService:
         """
         self._bind()
         assignment = self._conn.execute(
-            """SELECT a.course_id, a.learner_subject_id, c.version
+            """SELECT a.course_id, a.learner_subject_id, c.version, c.status
                  FROM training_assignments a
                  JOIN training_courses c
                    ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
@@ -368,6 +370,10 @@ class TrainingService:
             raise CourseNotFound(str(assignment_id))
         if str(assignment[1]) != learner_subject_id:
             raise TrainingError("只能提交本人的答卷")
+        # 已分配不等于可以继续学：知识被撤销/弃用会让课程转 NEEDS_REVIEW，
+        # 此时必须拒绝提交，而不是只挡住"新分配"（2026-11-05 L1 终审第 1 条）
+        if str(assignment[3]) != "PUBLISHED":
+            raise TrainingError(f"课程当前不可用（{assignment[3]}），暂停提交")
 
         existing = self._conn.execute(
             """SELECT attempt_id, objective_score, grading_status, submitted_at
@@ -456,7 +462,7 @@ class TrainingService:
     def progress(self, assignment_id: uuid.UUID, learner_subject_id: str) -> dict[str, Any]:
         self._bind()
         row = self._conn.execute(
-            """SELECT a.status, a.course_id, c.title, c.version, a.completed_at
+            """SELECT a.status, a.course_id, c.title, c.version, a.completed_at, c.status
                  FROM training_assignments a
                  JOIN training_courses c
                    ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
@@ -465,6 +471,8 @@ class TrainingService:
         ).fetchone()
         if row is None:
             raise CourseNotFound(str(assignment_id))
+        if str(row[5]) != "PUBLISHED":
+            raise TrainingError(f"课程当前不可用（{row[5]}），进度查询暂停")
 
         attempts = self._conn.execute(
             """SELECT count(*), max(objective_score), max(submitted_at)

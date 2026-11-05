@@ -182,9 +182,15 @@ def rollback_last(conn: psycopg.Connection, steps: int) -> None:
     for version in targets:
         script = ROLLBACK_DIR / f"{version}_down.sql"
         print(f"<- {script.name}")
-        with conn.transaction():
-            conn.execute(script.read_text(encoding="utf-8"))
-            conn.execute("DELETE FROM schema_migrations WHERE version = %s", (version,))
+        try:
+            with conn.transaction():
+                conn.execute(script.read_text(encoding="utf-8"))
+                conn.execute("DELETE FROM schema_migrations WHERE version = %s", (version,))
+        except psycopg.Error as exc:
+            # 回滚脚本可以主动拒绝（例如 0013 发现仍有 DISCARDED 数据）。
+            # 那是预期内的保护，不是崩了：转成可读的 SystemExit，别甩一串 traceback。
+            conn.rollback()
+            raise SystemExit(f"回滚 {version} 被拒绝，已整体中止（未做任何变更）：{exc}") from exc
     print(f"已回滚 {len(targets)} 个迁移。")
 
 

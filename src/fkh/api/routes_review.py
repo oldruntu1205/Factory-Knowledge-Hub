@@ -138,4 +138,28 @@ def revoke(
     return _view(snapshot)
 
 
+@router.post("/v1/knowledge/{knowledge_id}/discard", summary="作废未对外发布的版本")
+def discard(
+    knowledge_id: str,
+    context: PrincipalDep,
+    conn: ConnDep,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """作废一个从未对外发布的版本（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL）。
+
+    权限沿用撤销（knowledge.revoke）：弃用只收回可用性，不授予发布资格
+    （2026-11-05 L1 裁决 Q10）。与撤销的区别在于审计语义——弃用表示"从未公开过"。
+    """
+    context.require_scope("knowledge.revoke")
+    version_id = _parse_uuid(knowledge_id, "knowledge_id")
+    service = ReviewService(conn, context.tenant_id)
+
+    try:
+        snapshot = service.discard(version_id, context.principal_id, reason)
+    except (VersionNotFound, ReviewConflict, IllegalTransition) as exc:
+        raise _translate(exc) from exc
+
+    return _view(snapshot)
+
+
 __all__ = ["router"]

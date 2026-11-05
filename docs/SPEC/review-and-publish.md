@@ -48,6 +48,27 @@
 已撤销版本的向量，所以检索侧必须有状态过滤——这条在 Phase 2 接入检索时是硬性前提，
 不能只依赖向量是否已删除。
 
+## 4.1 弃用（`DISCARDED`）：未对外发布版本的终止路径
+
+2026-11-05 L1 裁决 B（`_evidence/l1_reply_discarded_status_20261105.md`）：
+`DRAFT` / `REVIEWED` 没有出口会导致错传文件永久滞留、版本号被占、审核队列堆积。
+
+| 项 | 规则 |
+|---|---|
+| 允许的来源 | `RAW` / `DRAFT` / `REVIEWED` / `APPROVED_INTERNAL` → `DISCARDED` |
+| 禁止的来源 | `PUBLISHED_PUBLIC` / `SUPERSEDED` / `REVOKED`（曾对外可见或已终止，必须走撤销） |
+| 动作 | `review_actions.action = DISCARD`，并记录 `from_status`（来源状态） |
+| 事件 | `knowledge.version.discarded.v1`（payload 含 `from_status`），一次成功弃用恰好一条 |
+| 幂等 | 重复弃用直接返回当前快照，不产生新审计与事件 |
+| 终态 | `DISCARDED` 不可再迁移；恢复内容要建新版本 |
+| 版本号 | 不回收（分配即不可复用） |
+| 审批人 | 保留（从 `APPROVED_INTERNAL` 弃用时，审批是历史事实） |
+| 培训 | 引用该版本的已发布课程转 `NEEDS_REVIEW`（与撤销同等待遇）；**已分配学员的三个入口均被阻断**：任务列表不再展示、提交答卷与进度查询都抛错（`TrainingService.my_assignments/submit_attempt/progress`） |
+| 权限 | 沿用 `knowledge.revoke`：弃用只收回可用性，不授予发布资格 |
+
+一句话区分：**`REVOKED` = 曾对外可见后撤回；`DISCARDED` = 从未对外可见、主动作废。**
+两者互换会让"这份资料是否曾经对外公开过"无法回答，因此审计上不得混用。
+
 ## 5. 错误码策略
 
 | 情况 | HTTP | code | 理由 |
@@ -63,12 +84,14 @@
 
 ## 6. 已知缺口
 
-**未批准内容没有出口**：`DRAFT` 与 `REVIEWED` 都不能直接转 `REVOKED`，
-上传错误的文件只能一直留在草稿态。这是 L1 §3.2 未定义的部分，
-方案与影响见 [`docs/REVIEW-REQUEST-draft-termination.md`](../REVIEW-REQUEST-draft-termination.md)。
+**未批准内容的出口问题已关闭**（2026-11-05，裁决 B）：`DRAFT` / `REVIEWED` 通过
+`DISCARDED` 终止，不再需要留在草稿态；`DRAFT → REVOKED` 仍被拒绝（撤销语义不同）。
+决策记录见 [`docs/REVIEW-REQUEST-draft-termination.md`](../REVIEW-REQUEST-draft-termination.md)。
 
-裁决前不得擅自往状态机里加迁移——`tests/e2e/test_review_flow.py::test_draft_cannot_be_revoked_pending_adr`
-固定了当前行为。
+仍然开放的两项：
+- **保留期与物理清理**：`DISCARDED` 版本与切片目前只标记不删除（ADR-05 未签）；
+  误传客户资料所需的紧急清理期限待业务确认。
+- **UI 入口**：当前只有 HTTP 端点 `POST /v1/knowledge/{knowledge_id}/discard`，后台界面未做。
 
 ## 7. 验收证据
 
@@ -76,4 +99,6 @@
   撤销立即生效、撤销不可复活、outbox 载荷不含敏感字段、跨租户不可见。
 - `tests/e2e/test_review_api.py`（8 项）：HTTP 层权限、公开审批额外权限、
   同一人 409、未知版本 403、非法 UUID 422。
-- `tests/security/test_state_machine_parity.py`（46 项）：应用层与数据库状态机一致。
+- `tests/security/test_state_machine_parity.py`：应用层与数据库状态机一致（状态增至 8 个后自动扩展为 8×8）。
+- `tests/e2e/test_discard_flow.py`（10 项）：弃用的允许/拒绝来源、审计与事件、幂等、终态、
+  检索不可见、版本号不回收、培训联动、跨租户无副作用。

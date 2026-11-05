@@ -86,11 +86,28 @@ def test_publish_then_revoke_emits_ordered_events(
         ("knowledge.version.revoked.v1", 2),
     ]
 
-    # 顺序键的用途：撤销不得先于发布被投递
+    # 顺序键的用途：撤销不得先于发布被投递。
+    # 注意：claim 是全局的，同一库里的其它用例也会留下 outbox 事件；本用例不能假设
+    # 一次 claim(20) 里就有自己的事件（会被别的聚合挤满）。这里循环领取并把无关事件
+    # 投递掉腾出槽位，直到拿到本聚合的事件或队列见底——断言的仍是"顺序"，不是批大小。
     relay = OutboxRelay(relay_conn, _NoopTransport(), RelayConfig())
-    first_batch = [e for e in relay.claim(20) if e.aggregate_id == version_id]
+
+    def claim_for_aggregate() -> list[Any]:
+        for _ in range(50):
+            batch = relay.claim(20)
+            if not batch:
+                return []
+            mine = [e for e in batch if e.aggregate_id == version_id]
+            for event in batch:
+                if event.aggregate_id != version_id:
+                    relay.deliver_claimed(event)
+            if mine:
+                return mine
+        raise AssertionError("50 轮领取仍未拿到本聚合的事件")
+
+    first_batch = claim_for_aggregate()
     assert [e.event_type for e in first_batch] == ["knowledge.version.published.v1"]
 
     relay.deliver_claimed(first_batch[0])
-    second_batch = [e for e in relay.claim(20) if e.aggregate_id == version_id]
+    second_batch = claim_for_aggregate()
     assert [e.event_type for e in second_batch] == ["knowledge.version.revoked.v1"]

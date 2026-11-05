@@ -30,6 +30,7 @@
         "knowledge.version.approved.v1",
         "knowledge.version.published.v1",
         "knowledge.version.revoked.v1",
+        "knowledge.version.discarded.v1",
         "knowledge.index.ready.v1",
         "rag.bad_case.created.v1",
         "training.course.published.v1",
