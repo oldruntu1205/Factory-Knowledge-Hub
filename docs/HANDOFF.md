@@ -7,7 +7,8 @@
 ## 1. 一句话现状
 
 知识从文件进来到可以被审核、发布、撤销、取证、**按权限检索**的**服务端闭环已经跑通**；
-问答生成（Phase 2 后半）与向量检索尚未开始。
+问答生成已接入**本地推理**（ADR-04 未签期只允许本地推理，见 docs/SPEC/answer-generation.md）；
+向量检索为 opt-in（`FKH_RETRIEVAL_MODE=hybrid`），生产默认词法。
 
 ```
 文件 → 解析 → 切片 → 入库(草稿) → 审核 → 内部批准 → 双签公开 → 撤销 → 事件投递 → 受控检索
@@ -24,6 +25,7 @@
 | D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
+| F · 问答 | `POST /v1/knowledge/answer`：检索 → 本地推理 → 引用核验 → 状态判定 → 审计 | 完成（**本地推理 only**，`FKH_LLM_PROVIDER=none` 默认 503；ADR-04 未签期唯一允许形态；`docs/SPEC/answer-generation.md`） | 2026-11-06 |
 | F · 培训 | 建课、出题、发布、分派、测验判分、进度 | 完成；签核与反馈未做 | 本轮 |
 
 ## 3. 怎么跑
@@ -103,11 +105,13 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
    显式启用后缺模型/权重/推理失败一律 503，**不得静默降级**成词法结果（判决 Q2）。
 8. **`/v1/knowledge/context` 固定词法**：即使 search 已启用混合，context 也不跟随；
    接混合会改变拒答分档，须另行送审（判决 Q7）。
-9. **弃用 ≠ 撤销**：`DISCARDED` 只允许从未对外发布的版本进入（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL），
+9. **问答只允许本地推理**：ADR-04 未签署前，`/v1/knowledge/answer` 只连 loopback
+   （按解析后 IP 校验、不经代理、不跟重定向、不自动拉模型）；接入任何外部 provider 必须先签 ADR-04。
+10. **弃用 ≠ 撤销**：`DISCARDED` 只允许从未对外发布的版本进入（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL），
    `PUBLISHED_PUBLIC`/`SUPERSEDED` 必须走 `REVOKED`；两者审计语义不同，不得互换。
-10. **词法查询必须保持 OR**：字级 token 用 AND 组合会让自然语言问句几乎零命中（实测 0.06）；
+11. **词法查询必须保持 OR**：字级 token 用 AND 组合会让自然语言问句几乎零命中（实测 0.06）；
    改这里必须重跑 `docs/SPEC/recall-benchmark.md` 的回归门槛并同步 `scoring` 版本。
-11. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
+12. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
    `build_embedder` 按 `FKH_ENV` 直接拒绝。
 
 ## 7. 未裁决事项

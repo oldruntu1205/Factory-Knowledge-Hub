@@ -2,15 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fkh.local/schema/error.json",
   "title": "ErrorResponse",
-  "description": "L1 §6.3 统一错误格式。message 为固定文案，不得携带内部标识或资源存在性信息。",
+  "description": "L1 §6.3 统一错误格式。message 为固定文案，不得携带内部标识或资源存在性信息。SERVICE_UNAVAILABLE 表示能力依赖未就绪（数据库/本地推理/检索密钥未配置），与业务拒答（200 + REFUSED）严格区分。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["error"],
+  "required": [
+    "error"
+  ],
   "properties": {
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message", "trace_id"],
+      "required": [
+        "code",
+        "message",
+        "trace_id"
+      ],
       "properties": {
         "code": {
           "type": "string",
@@ -19,13 +25,20 @@
             "ACCESS_DENIED",
             "VALIDATION_ERROR",
             "NOT_IMPLEMENTED",
+            "SERVICE_UNAVAILABLE",
             "VERSION_CONFLICT",
             "RATE_LIMITED",
             "INTERNAL_ERROR"
           ]
         },
-        "message": { "type": "string", "minLength": 1 },
-        "trace_id": { "type": "string", "minLength": 1 }
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trace_id": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }

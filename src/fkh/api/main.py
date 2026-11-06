@@ -10,12 +10,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 import psycopg
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from fkh.answer import AnswerNotConfigured, AnswerService
 from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, install_error_handlers
 from fkh.api.models import AnswerRequest, TrainingAskRequest
@@ -27,8 +28,16 @@ from fkh.api.routes_search import router as search_router
 from fkh.api.routes_training import router as training_router
 from fkh.api.security import PrincipalContext, PrincipalDep, require
 from fkh.config import Settings, get_settings
+from fkh.generation import GenerationError, GenerationNotConfigured, get_generator
 from fkh.retrieval.embedding import EmbeddingNotConfigured
-from fkh.retrieval.search import HYBRID_MODE, SCORING_BY_MODE, SearchNotConfigured
+from fkh.retrieval.search import (
+    HYBRID_MODE,
+    SCORING_BY_MODE,
+    SearchContext,
+    SearchNotConfigured,
+    SearchScopeNotAuthorized,
+    SearchUnavailable,
+)
 
 # (方法, 路径, 所需权限, 说明)
 CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
@@ -67,14 +76,79 @@ def _register_contract_routes(app: FastAPI) -> None:
         )
 
 
-async def _answer(request: Request, payload: AnswerRequest, context: PrincipalDep) -> JSONResponse:
-    """带引用问答入口。
+def _answer(
+    request: Request,
+    payload: AnswerRequest,
+    context: PrincipalDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> JSONResponse:
+    """带引用问答。
 
-    入参校验与权限收窄在此完成，检索与生成留到 Phase 2。
-    先校验再拒绝，可确保契约层（请求模型、scope 收窄、错误格式）现在就被真实验证。
+    顺序是刻意的（L1 裁决 §第 1 项）：**鉴权 → 请求校验 → 能力配置 → 检索 → 生成**。
+    越权不能被"配置没配好"掩盖成 503，所以能力检查排在 scope 收窄之后。
+
+    失败口径：
+    - 403：scope 越权（含上游 SearchScopeNotAuthorized）；
+    - 503：推理能力未就绪/不可达（`ERROR` 审计，不伪装成 REFUSED）；
+    - 200：ANSWERED / REFUSED / HUMAN_REVIEW_REQUIRED 三种业务状态。
     """
     context.narrow_knowledge_scope(payload.knowledge_scope)
-    raise ApiError(ErrorCode.NOT_IMPLEMENTED, detail="检索与生成链路尚未接入（Phase 2）")
+    trace_id = str(getattr(request.state, "trace_id", uuid.uuid4().hex))
+
+    try:
+        mode, embedder = resolve_embedder(settings)
+    except EmbeddingNotConfigured as exc:
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    try:
+        generator = get_generator(
+            settings.llm_provider,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+    except GenerationNotConfigured as exc:
+        # 非 loopback / 模型不存在 / provider 非法：在进入业务前就失败
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    # 数据库连接按需获取（而不是做成依赖）：依赖会在调用端点前解析，
+    # 数据库没配置的 503 会抢先盖住 403/422，把既有契约断言打乱。
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail="数据库未配置，业务端点不可用")
+
+    try:
+        with pool.connection() as conn:
+            service = AnswerService(
+                conn,
+                generator=generator,
+                hash_key=settings.retrieval_hash_key,
+                hash_key_id=settings.retrieval_hash_key_id,
+                embedder=embedder,
+                rrf_k=settings.rrf_k,
+                retrieval_mode=mode,
+                max_tokens=settings.llm_max_tokens,
+                temperature=settings.llm_temperature,
+            )
+            outcome = service.answer(
+                payload.query,
+                knowledge_scope=payload.knowledge_scope,
+                language=payload.language,
+                max_evidence=payload.max_evidence,
+                context=SearchContext(
+                    tenant_id=context.tenant_id,
+                    principal_id=context.principal_id,
+                    subject=context.to_subject(),
+                    allowed_scopes=context.allowed_scopes,
+                    trace_id=trace_id,
+                ),
+            )
+    except SearchScopeNotAuthorized as exc:
+        raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"knowledge_scope 未授权: {exc}") from exc
+    except (SearchNotConfigured, SearchUnavailable, AnswerNotConfigured, GenerationError) as exc:
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return JSONResponse(content=outcome.payload)
 
 
 async def _training_ask(request: Request, payload: TrainingAskRequest, context: PrincipalDep) -> JSONResponse:
@@ -193,7 +267,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             200: {"description": "见 contracts/schema/answer_response.json"},
             401: {"description": "未认证"},
             403: {"description": "无权限或 scope 越界"},
-            501: {"description": "检索链路未接入"},
+            503: {"description": "本地推理能力未就绪或不可达（审计记 ERROR）"},
         },
     )
     app.add_api_route(

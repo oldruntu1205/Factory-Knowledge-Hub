@@ -319,6 +319,12 @@ paths:
     post:
       tags: [knowledge]
       summary: 带引用问答
+      description: >-
+        检索 → 本地推理 → 引用白名单核验 → 状态判定。ADR-04 未签署期间只允许本地推理
+        （Ollama，loopback）；未配置或被拒时返回 503 并记 `ERROR` 审计，不伪装成拒答。
+        `ANSWERED` 至少有 1 条引用，且每条实质性结论都必须带引用；否则返回
+        `REFUSED`（`INSUFFICIENT_EVIDENCE`，需人工复核）或 `HUMAN_REVIEW_REQUIRED`（出现伪造引用）。
+        审计只保存 query 的 HMAC 摘要，不落明文。
       requestBody:
         required: true
         content:
@@ -335,7 +341,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /v1/evidence/{evidence_id}:
     get:

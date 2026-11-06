@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     retrieval_hash_key: str | None = None
     retrieval_hash_key_id: str = "k1"
 
+    # 本地推理（ADR-04 未签期的允许形态：只允许本地推理或拒答）
+    # provider=none 时问答端点 503（能力未配置），不退回任何默认模型。
+    llm_provider: str = "none"            # none | ollama
+    llm_base_url: str = "http://127.0.0.1:11434"  # 只允许 loopback，非本地地址构造即拒绝
+    llm_model: str | None = None           # 必须显式配置，例如 qwen3:14b
+    llm_timeout_seconds: float = 60.0
+    llm_max_tokens: int = 1024
+    llm_temperature: float = 0.0
+
     # Embedding（ADR-04/06）。数据不出境：只用本地权重，不提供任何远程 endpoint。
     # provider=none 时纯词法检索，不生成向量，也不假装有语义能力。
     embedding_provider: str = "none"      # none | bge-m3 | test（test 仅限测试）

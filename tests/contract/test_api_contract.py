@@ -121,14 +121,21 @@ def test_answer_invalid_body_rejected_before_implementation(client: TestClient) 
     assert response.status_code == 422
 
 
-def test_answer_returns_501_when_authorized(client: TestClient) -> None:
+def test_answer_returns_503_when_capability_unconfigured(client: TestClient) -> None:
+    """契约强制改写（2026-11-06）：问答已实现，不再返回 501。
+
+    断言不放松：原来要求"已授权但能力不可用时给出可识别错误"，现在要求同一件事，
+    只是错误码从 NOT_IMPLEMENTED 变成 SERVICE_UNAVAILABLE（本地推理未配置），
+    并额外要求 trace_id 可关联——这是能力故障而非业务拒答的判据。
+    """
     response = client.post(
         "/v1/knowledge/answer",
         json={"query": "冷凝管规格", "knowledge_scope": "internal_product", "language": "zh-CN"},
         headers={"Authorization": f"Bearer {_token()}"},
     )
-    assert response.status_code == 501
-    _assert_error(response, "NOT_IMPLEMENTED")
+    assert response.status_code == 503
+    _assert_error(response, "SERVICE_UNAVAILABLE")
+    assert response.json()["error"]["trace_id"]
 
 
 def test_trace_header_present(client: TestClient) -> None:
