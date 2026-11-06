@@ -19,10 +19,21 @@
         "OUT_OF_SCOPE",
         "HUMAN_REVIEW_REQUIRED",
         "SOURCE_REVOKED",
+        "UNSUPPORTED_CLAIM",
         null
       ]
     },
     "requires_human_review": { "type": "boolean" },
+    "unsupported": {
+      "type": ["object", "null"],
+      "description": "答案—证据一致性检查的未支持数量；仅回数量不回原文。某类没有 claim 时为 null（不适用），不是 0% 或 100%。",
+      "additionalProperties": false,
+      "required": ["codes", "numbers"],
+      "properties": {
+        "codes": { "type": ["integer", "null"], "minimum": 0 },
+        "numbers": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
     "trace_id": { "type": "string", "minLength": 1 },
     "index_generation": { "type": "integer", "minimum": 0 },
     "citations": {

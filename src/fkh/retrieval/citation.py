@@ -41,6 +41,8 @@ class RefusalCode(StrEnum):
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
     HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
     SOURCE_REVOKED = "SOURCE_REVOKED"
+    # 答案里的货号/带单位数值未在被引用的证据里出现（2026-11-06 裁决）
+    UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +173,7 @@ def to_response(
     answer_text: str,
     trace_id: str,
     index_generation: int,
+    unsupported: dict[str, int | None] | None = None,
 ) -> dict[str, Any]:
     """组装成 AnswerResponse（contracts/schema/answer_response.json）。
 
@@ -195,6 +198,9 @@ def to_response(
             for citation in plan.citations
         ],
     }
+    if unsupported is not None:
+        # 只回数量，不回未支持的原文（裁决：避免泄漏证据细节）
+        payload["unsupported"] = unsupported
     if plan.refusal_code is not None:
         payload["refusal_code"] = plan.refusal_code.value
     else:

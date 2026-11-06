@@ -289,7 +289,7 @@ paths:
         每一块都经过 ACL 判定；父块仅在其下全部子块均可见时整段返回，否则退回子块原文。
         必须经过检索审计，权限与 /v1/knowledge/search 相同。
         召回来源**固定为词法**（2026-11-04 判决 Q7）：候选来源变化会改变拒答分档
-        （NO_EVIDENCE / INSUFFICIENT_EVIDENCE / HUMAN_REVIEW_REQUIRED），
+        （NO_EVIDENCE / INSUFFICIENT_EVIDENCE / HUMAN_REVIEW_REQUIRED / UNSUPPORTED_CLAIM），
         即使 search 已启用混合，本端点也不跟随；接混合须另行送审。
       x-internal: true
       requestBody:
@@ -323,7 +323,8 @@ paths:
         检索 → 本地推理 → 引用白名单核验 → 状态判定。ADR-04 未签署期间只允许本地推理
         （Ollama，loopback）；未配置或被拒时返回 503 并记 `ERROR` 审计，不伪装成拒答。
         `ANSWERED` 至少有 1 条引用，且每条实质性结论都必须带引用；否则返回
-        `REFUSED`（`INSUFFICIENT_EVIDENCE`，需人工复核）或 `HUMAN_REVIEW_REQUIRED`（出现伪造引用）。
+        `REFUSED`（`INSUFFICIENT_EVIDENCE`，需人工复核）、`HUMAN_REVIEW_REQUIRED`（出现伪造引用），
+        或 `HUMAN_REVIEW_REQUIRED` + `UNSUPPORTED_CLAIM`（答案里的货号/带单位数值未被引用证据支持）。
         审计只保存 query 的 HMAC 摘要，不落明文。
       requestBody:
         required: true

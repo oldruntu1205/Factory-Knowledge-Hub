@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -22,6 +23,8 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from fkh.answer.consistency import RULE_VERSION as CONSISTENCY_RULE
+from fkh.answer.consistency import ClaimCheck, check_answer
 from fkh.answer.prompt import build_prompt, extract_citations
 from fkh.catalog.lookup import chunk_contains_row, find_catalog_item
 from fkh.domain.catalog import count_distinct_codes, detect_catalog_intent
@@ -60,6 +63,16 @@ class AnswerOutcome:
     payload: dict[str, Any]
     status: AnswerStatus
     model_id: str | None
+
+
+def _unsupported_counts(check: ClaimCheck | None) -> dict[str, int | None] | None:
+    """返回未支持的**数量**（不返回原文，避免泄漏证据细节）。无 claim 记 None=不适用。"""
+    if check is None or not check.applicable:
+        return None
+    return {
+        "codes": (check.codes_total - check.codes_supported) if check.codes_total else None,
+        "numbers": (check.numbers_total - check.numbers_supported) if check.numbers_total else None,
+    }
 
 
 def _render_citations(answer_text: str, citations: Any) -> str:
@@ -237,6 +250,32 @@ class AnswerService:
         )
         plan = decide(blocks, build, answer_text=answer_text)
 
+        consistency: ClaimCheck | None = None
+        if plan.status is AnswerStatus.ANSWERED:
+            # 2026-11-06 裁决 ①：只跟**有效引用的证据块**比对，不回退到全部证据。
+            cited = {citation.evidence_id for citation in plan.citations}
+            cited_texts = [block.text for block in blocks if str(block.chunk_id) in cited]
+            started = time.perf_counter()
+            consistency = check_answer(answer_text, cited_texts)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if not consistency.supported:
+                # 不一致 ≠ 一定错（可能是改写/单位换算），所以保留答案但要求人工复核
+                plan = AnswerPlan(
+                    status=AnswerStatus.HUMAN_REVIEW_REQUIRED,
+                    citations=plan.citations,
+                    requires_human_review=True,
+                    refusal_code=RefusalCode.UNSUPPORTED_CLAIM,
+                )
+                logger.info(
+                    "answer unsupported claims: codes=%s numbers=%s trace_id=%s",
+                    len(consistency.unsupported_codes),
+                    len(consistency.unsupported_numbers),
+                    trace_id,
+                )
+            consistency_ms = elapsed_ms
+        else:
+            consistency_ms = 0
+
         if plan.status is not AnswerStatus.ANSWERED:
             logger.info(
                 "answer not answered: status=%s code=%s reason=%s trace_id=%s",
@@ -251,6 +290,7 @@ class AnswerService:
             answer_text=_render_citations(answer_text, plan.citations),
             trace_id=trace_id,
             index_generation=self._index_generation(context.tenant_id, blocks),
+            unsupported=_unsupported_counts(consistency),
         )
         self._persist(
             context,
@@ -259,7 +299,10 @@ class AnswerService:
             model_id=generated.model_id,
             trace_id=trace_id,
             query_hash=query_hash,
+            route="rag",
             route_reason=catalog_reason,
+            consistency=consistency,
+            consistency_ms=consistency_ms,
         )
         return AnswerOutcome(payload=payload, status=plan.status, model_id=generated.model_id)
 
@@ -446,6 +489,8 @@ class AnswerService:
         query_hash: str | None,
         route: str = "rag",
         route_reason: str | None = None,
+        consistency: Any = None,
+        consistency_ms: int | None = None,
     ) -> None:
         self._audit(
             context=context,
@@ -458,6 +503,8 @@ class AnswerService:
             query_hash=query_hash,
             route=route,
             route_reason=route_reason,
+            consistency=consistency,
+            consistency_ms=consistency_ms,
         )
 
     def _audit(
@@ -473,6 +520,8 @@ class AnswerService:
         query_hash: str | None,
         route: str,
         route_reason: str | None,
+        consistency: Any = None,
+        consistency_ms: int | None = None,
     ) -> None:
         """写问答审计（主记录 + 引用），同一事务。
 
@@ -485,8 +534,11 @@ class AnswerService:
             row = self._conn.execute(
                 """INSERT INTO rag_queries
                      (tenant_id, principal_id, query_hash, scope, status, refusal_code,
-                      trace_id, model_id, route, route_reason)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                      trace_id, model_id, route, route_reason,
+                      consistency_rule, codes_total, codes_supported,
+                      numbers_total, numbers_supported, consistency_ms)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, %s)
                    RETURNING id""",
                 (
                     context.tenant_id,
@@ -499,6 +551,12 @@ class AnswerService:
                     model_id,
                     route,
                     route_reason,
+                    CONSISTENCY_RULE if consistency is not None else None,
+                    consistency.codes_total if consistency is not None else None,
+                    consistency.codes_supported if consistency is not None else None,
+                    consistency.numbers_total if consistency is not None else None,
+                    consistency.numbers_supported if consistency is not None else None,
+                    consistency_ms,
                 ),
             ).fetchone()
             if row is None:

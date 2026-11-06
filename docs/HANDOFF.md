@@ -86,6 +86,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0014 | 目录结构化通道：`catalog_items` 表（RLS）+ `rag_queries.route/route_reason` | 已应用（本机） |
 | 0015 | 目录冲突人工复核队列：`catalog_conflict_groups` + `catalog_conflict_candidates`（RLS） | 已应用（本机） |
 | 0016 | 词法排序 v3：审计枚举补 `lexical-v3`（BM25 字级重排） | 已应用（本机） |
+| 0017 | 答案一致性审计：`rag_queries` 加 6 列（规则版本/claim 计数/耗时） | 已应用（本机） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
