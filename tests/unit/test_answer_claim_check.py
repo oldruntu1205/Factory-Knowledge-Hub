@@ -27,11 +27,35 @@ def test_same_number_different_unit_is_unsupported() -> None:
     assert report.unsupported_numbers == ("14cm",)
 
 
-def test_dimension_uses_header_unit_from_same_row() -> None:
-    """单元格只有 24×24，但同一行/表头给了 mm——单位可确定且一致才支持。"""
-    evidence = "货号 规格 管径*总长 上标口*下标口 单价\nA112420 200mm 38*300 24*24 39.00"
+def test_dimension_uses_unit_from_its_own_column_header() -> None:
+    """该列表头写了 (mm)，单元格只有 24*24 —— 单位属于这一列，才算支持。"""
+    evidence = "货号 上标口*下标口(mm) 单价\nA112420 24*24 39.00"
     report = check_answer("上标口 24×24mm。", [evidence])
     assert report.supported is True
+
+
+def test_unit_in_unrelated_column_does_not_support() -> None:
+    """同一行别的列写着 200mm，不能认定 24*24 的单位是 mm（2026-11-07 复审）。"""
+    evidence = "货号 规格 管径*总长 上标口*下标口 单价\nA112420 200mm 38*300 24*24 39.00"
+    report = check_answer("上标口 24×24mm。", [evidence])
+    assert report.unsupported_numbers == ("24×24mm",)
+
+
+def test_column_header_with_different_unit_is_unsupported() -> None:
+    """该列表头声明 cm，claim 说 mm：单位不一致。"""
+    evidence = "货号 上标口*下标口(cm) 单价\nA112420 24*24 39.00"
+    report = check_answer("上标口 24×24mm。", [evidence])
+    assert report.unsupported_numbers == ("24×24mm",)
+
+
+def test_mixed_units_without_clear_ownership_is_unsupported() -> None:
+    """一行里 mm 与 cm 并存、目标列没有单位声明：归属不明，不支持。"""
+    evidence = (
+        "货号 管径 上标口*下标口 长度\n"
+        "A112420 38mm 24*24 300cm"
+    )
+    report = check_answer("上标口 24×24mm。", [evidence])
+    assert report.unsupported_numbers == ("24×24mm",)
 
 
 def test_dimension_with_conflicting_unit_is_unsupported() -> None:

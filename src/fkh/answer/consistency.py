@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-RULE_VERSION = "literal-support-v2"
+RULE_VERSION = "literal-support-v3"
 
 # 货号：1–3 个大写字母 + 5–8 位数字，两侧要边界
 _CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{5,8})(?![0-9])")
@@ -113,22 +113,50 @@ def _supported_code(claim: str, evidence: str) -> bool:
 
 
 _UNIT_TOKEN = re.compile("|".join(sorted(_UNITS, key=len, reverse=True)))
+_HEADER_HINTS = ("货号", "编号", "型号")
 
 
-def _unit_reported_near(core: str, evidence: str, unit: str) -> bool:
-    """结构体出现在证据里时，同一行或上方表头必须**明确给出同一个单位**。
+def _cell_unit(tokens: list[str], index: int) -> str | None:
+    """取某一列声明/自带的单位（来自该列表头，或该单元格本身）。"""
+    for token in (tokens[index] if index < len(tokens) else "",):
+        match = _UNIT_TOKEN.search(normalize(token))
+        if match is not None:
+            return match.group(0)
+    return None
 
-    2026-11-07 L1 终审：`24×24mm` 不能被无关的 `24×24` 支持，必须有可确定关联的表头单位且一致。
-    做法：定位含结构体的行，把该行与其上一行（表头/邻近行）拼成上下文；claim 的单位必须出现在上下文里。
-    单位缺失（表头也没写）视为不支持——"仅结构相同不足以支持"。
+
+def _header_for(lines: list[str], row_index: int) -> list[str] | None:
+    """向上找最近的一行表头（含 货号/编号/型号 且列数不少于数据行）。"""
+    row_columns = len(lines[row_index].split())
+    for index in range(row_index - 1, max(-1, row_index - 4), -1):
+        candidate = lines[index]
+        tokens = candidate.split()
+        if len(tokens) < row_columns:
+            continue
+        if any(hint in candidate for hint in _HEADER_HINTS):
+            return tokens
+    return None
+
+
+def _unit_belongs_to_cell(core: str, evidence: str, unit: str) -> bool:
+    """结构体所在**那一列**必须自带或由该列表头声明同一个单位。
+
+    2026-11-07 L1 复审：单位的"存在"不等于"属于该结构"——
+    同一行别的列写着 `200mm`，不能据此认定 `24*24` 的单位是 mm。
+    因此按**列位置**对齐表头取单位；对不上或表头没写单位，一律不支持。
     """
     lines = evidence.splitlines()
     for index, line in enumerate(lines):
-        if core not in normalize(line):
+        tokens = line.split()
+        normalized = [normalize(token) for token in tokens]
+        if core not in normalized:
             continue
-        context = line if index == 0 else lines[index - 1] + "\n" + line
-        units = {token for token in _UNIT_TOKEN.findall(normalize(context))}
-        if unit in units:
+        column = normalized.index(core)
+        header = _header_for(lines, index)
+        if header is None:
+            continue
+        header_unit = _cell_unit([normalize(token) for token in header], column)
+        if header_unit == unit:
             return True
     return False
 
@@ -160,7 +188,7 @@ def _supported_number(claim: str, evidence_texts: list[str]) -> bool:
         return False
     unit = unit_match.group(0)
     core = normalized[: unit_match.start()]
-    return any(_unit_reported_near(core, text, unit) for text in evidence_texts)
+    return any(_unit_belongs_to_cell(core, text, unit) for text in evidence_texts)
 
 
 def check_answer(answer: str, evidence_texts: list[str]) -> ClaimCheck:
