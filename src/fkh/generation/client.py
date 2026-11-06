@@ -174,6 +174,10 @@ class OllamaGenerator:
                 "model": self._model,
                 "prompt": prompt,
                 "stream": False,
+                # qwen3 等混合思考模型默认会先"思考"再作答；思考 token 计入 num_predict，
+                # 预算不够时 response 直接为空（实测 512 预算下出现过空答案）。
+                # 问答场景不需要展示思考过程，显式关闭；旧版 Ollama 忽略未知字段，无副作用。
+                "think": False,
                 "options": {"temperature": temperature, "num_predict": max_tokens},
             },
         )

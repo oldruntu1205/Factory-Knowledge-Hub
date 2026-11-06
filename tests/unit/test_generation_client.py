@@ -108,6 +108,7 @@ class _Server:
         self.generate_body = generate_body or {}
         self.location = location
         self.hits: list[str] = []
+        self.body: dict[str, Any] = {}
 
         server = self
 
@@ -118,7 +119,8 @@ class _Server:
 
             def do_POST(self) -> None:  # noqa: N802 - http.server 协议
                 length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
+                raw = self.rfile.read(length)
+                server.body = json.loads(raw.decode("utf-8") or "{}")
                 server.hits.append(self.path)
                 self._respond(server.generate_body)
 
@@ -185,6 +187,9 @@ def test_generation_ignores_thinking_field_and_environment_proxy(
     assert result.text == "接口 24/29。"
     assert "内部推理" not in result.text
     assert server.hits == ["/api/tags", "/api/generate"]
+    # 思考 token 与正文共享 num_predict：不关掉思考，预算不足时会返回空答案（实测）
+    assert server.body.get("think") is False
+    assert server.body.get("options", {}).get("num_predict") == 16
 
 
 def test_deterministic_generator_is_not_reachable_from_production_config() -> None:
