@@ -15,6 +15,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from fkh.authz.policy import AclPolicy
+from fkh.domain.catalog import CONFLICT_MARK, CatalogExtractionStats, parse_catalog_text
 from fkh.domain.chunking.types import Chunk
 from fkh.domain.lexeme import segment_cjk
 from fkh.domain.state_machine import VersionStatus, assert_transition
@@ -240,6 +241,86 @@ class IngestionRepository:
             cursor += 1
 
         return len(parents), len(children)
+
+    def extract_catalog_items(
+        self, *, version_id: UUID, currency: str
+    ) -> CatalogExtractionStats:
+        """把该版本 child 块里的「货号 规格 单价」行抽成结构化事实。
+
+        幂等：已存在的同货号同原文行只计 duplicates，不重复写；
+        同货号不同原文行计 conflicts 且**不覆盖**（冲突需要人看，不能任取一条）。
+        """
+        rows = self._conn.execute(
+            """SELECT id, chunk_text, locator
+                 FROM knowledge_chunks
+                WHERE tenant_id = %s AND version_id = %s AND chunk_kind = 'child'
+                ORDER BY id""",
+            (self._tenant, version_id),
+        ).fetchall()
+
+        known = {
+            str(row[0]): str(row[1])
+            for row in self._conn.execute(
+                """SELECT code, raw_text FROM catalog_items
+                    WHERE tenant_id = %s AND version_id = %s""",
+                (self._tenant, version_id),
+            ).fetchall()
+        }
+
+        parsed = inserted = duplicates = conflicts = unsupported = 0
+        removed = 0
+        for chunk_id, chunk_text, locator in rows:
+            result = parse_catalog_text(str(chunk_text))
+            parsed += len(result.rows)
+            unsupported += result.unsupported_count
+            for item in result.rows:
+                prior = known.get(item.code)
+                if prior is not None:
+                    if prior == CONFLICT_MARK:
+                        continue
+                    if prior == item.raw_text:
+                        duplicates += 1
+                        continue
+                    # 同版本同货号出现不同原文行：**两条都不保留**，宁可查不到也不给错价
+                    # （L1：冲突行不得覆盖或任取一条）
+                    self._conn.execute(
+                        "DELETE FROM catalog_items WHERE tenant_id = %s AND version_id = %s AND code = %s",
+                        (self._tenant, version_id, item.code),
+                    )
+                    known[item.code] = CONFLICT_MARK
+                    conflicts += 1
+                    removed += 1
+                    continue
+                known[item.code] = item.raw_text
+                self._conn.execute(
+                    """INSERT INTO catalog_items
+                         (tenant_id, version_id, chunk_id, code, spec, raw_text, raw_price,
+                          price, currency, locator)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (tenant_id, version_id, code) DO NOTHING""",
+                    (
+                        self._tenant,
+                        version_id,
+                        chunk_id,
+                        item.code,
+                        item.spec,
+                        item.raw_text,
+                        item.price_text,
+                        item.price_value,
+                        currency,
+                        Jsonb(dict(locator) if locator else {}),
+                    ),
+                )
+                inserted += 1
+
+        return CatalogExtractionStats(
+            parsed=parsed,
+            # 入表数按净值报：因冲突被删掉的行不算"已插入"
+            inserted=inserted - removed,
+            duplicates=duplicates,
+            conflicts=conflicts,
+            unsupported=unsupported,
+        )
 
     def _insert_chunk(
         self,

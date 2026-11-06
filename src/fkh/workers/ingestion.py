@@ -49,6 +49,9 @@ class IngestionRequest:
     source_object_key: str | None = None
     mime_type: str | None = None
     language: str = "zh-CN"
+    # 目录货币必须显式给出（来自目录约定/元数据）；不给就不做结构化抽取，
+    # 绝不"默认人民币"——价格口径错了比不抽更糟（2026-11-06 L1 裁决 §3.6）
+    catalog_currency: str | None = None
 
     def __post_init__(self) -> None:
         if self.classification not in VALID_CLASSIFICATIONS:
@@ -66,6 +69,8 @@ class IngestionRequest:
             )
         if not self.content:
             raise ValueError("content 为空，拒绝入库")
+        if self.catalog_currency is not None and self.catalog_currency not in {"CNY"}:
+            raise ValueError(f"不支持的目录货币：{self.catalog_currency}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +174,19 @@ def ingest_document(
             embedding_model_id=embedder.model_id if embedder is not None else None,
         )
 
+        # 目录结构化抽取：只在显式声明 domain=product_catalog 且给出货币时执行。
+        # 同一事务内完成：抽取失败会随入库一起回滚，不会留下"有文档无事实"的半套状态。
+        catalog_stats = None
+        catalog_note: list[str] = []
+        if request.domain == "product_catalog":
+            if request.catalog_currency is None:
+                catalog_note.append("catalog_skipped=no_currency")
+            else:
+                catalog_stats = repo.extract_catalog_items(
+                    version_id=version_id, currency=request.catalog_currency
+                )
+                catalog_note.append(catalog_stats.as_warning())
+
         repo.transition(
             version_id=version_id,
             source=VersionStatus.RAW,
@@ -188,5 +206,5 @@ def ingest_document(
         parser_id=parsed.parser_id,
         tokenizer_id=chunking.tokenizer_id,
         review_reasons=tuple(reason.value for reason in parsed.review_reasons),
-        warnings=chunking.warnings + parsed.warnings,
+        warnings=chunking.warnings + parsed.warnings + tuple(catalog_note),
     )

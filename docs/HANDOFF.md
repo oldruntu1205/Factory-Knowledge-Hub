@@ -25,6 +25,7 @@
 | D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
+| G · 目录精确通道 | 货号→规格/单价：入库抽取 + 确定性查询 + 问答路由（不经过模型） | 完成（`docs/SPEC/catalog-exact.md`；客户目录实测 recall 0/30 → 精确查询） | 2026-11-06 |
 | F · 问答 | `POST /v1/knowledge/answer`：检索 → 本地推理 → 引用核验 → 状态判定 → 审计 | 完成（**本地推理 only**，`FKH_LLM_PROVIDER=none` 默认 503；ADR-04 未签期唯一允许形态；`docs/SPEC/answer-generation.md`） | 2026-11-06 |
 | F · 培训 | 建课、出题、发布、分派、测验判分、进度 | 完成；签核与反馈未做 | 本轮 |
 
@@ -81,6 +82,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0011 | 检索审计补 `retrieval_mode`（lexical-v1 / hybrid-rrf-v1 / not_executed） | 已应用（本机，回滚/重放已演练） |
 | 0012 | 审计枚举补 `lexical-v2`（词法查询 AND→OR） | 已应用（本机） |
 | 0013 | 版本终止路径：新增 `DISCARDED` 状态 + `DISCARD` 动作 + `review_actions.from_status` + 培训联动 | 已应用（本机） |
+| 0014 | 目录结构化通道：`catalog_items` 表（RLS）+ `rag_queries.route/route_reason` | 已应用（本机） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
@@ -105,13 +107,15 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
    显式启用后缺模型/权重/推理失败一律 503，**不得静默降级**成词法结果（判决 Q2）。
 8. **`/v1/knowledge/context` 固定词法**：即使 search 已启用混合，context 也不跟随；
    接混合会改变拒答分档，须另行送审（判决 Q7）。
-9. **问答只允许本地推理**：ADR-04 未签署前，`/v1/knowledge/answer` 只连 loopback
+9. **价格/货号类问题走确定性通道**：精确通道**不允许模型参与**；看到货号不等于该接管——
+   必须同时是询价/询规格意图；跨版本冲突与原文不一致一律拒答或转人工，不任取一条。
+10. **问答只允许本地推理**：ADR-04 未签署前，`/v1/knowledge/answer` 只连 loopback
    （按解析后 IP 校验、不经代理、不跟重定向、不自动拉模型）；接入任何外部 provider 必须先签 ADR-04。
-10. **弃用 ≠ 撤销**：`DISCARDED` 只允许从未对外发布的版本进入（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL），
+11. **弃用 ≠ 撤销**：`DISCARDED` 只允许从未对外发布的版本进入（RAW/DRAFT/REVIEWED/APPROVED_INTERNAL），
    `PUBLISHED_PUBLIC`/`SUPERSEDED` 必须走 `REVOKED`；两者审计语义不同，不得互换。
-11. **词法查询必须保持 OR**：字级 token 用 AND 组合会让自然语言问句几乎零命中（实测 0.06）；
+12. **词法查询必须保持 OR**：字级 token 用 AND 组合会让自然语言问句几乎零命中（实测 0.06）；
    改这里必须重跑 `docs/SPEC/recall-benchmark.md` 的回归门槛并同步 `scoring` 版本。
-12. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
+13. **生产禁止 `embedding_provider=test`**：伪向量会让召回质量与验收结论失真，
    `build_embedder` 按 `FKH_ENV` 直接拒绝。
 
 ## 7. 未裁决事项
