@@ -267,7 +267,8 @@ class AnswerService:
                     refusal_code=RefusalCode.UNSUPPORTED_CLAIM,
                 )
                 logger.info(
-                    "answer unsupported claims: codes=%s numbers=%s trace_id=%s",
+                    "answer unsupported claims: reasons=%s codes=%s numbers=%s trace_id=%s",
+                    ",".join(consistency.reason_codes),
                     len(consistency.unsupported_codes),
                     len(consistency.unsupported_numbers),
                     trace_id,

@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-RULE_VERSION = "literal-support-v1"
+RULE_VERSION = "literal-support-v2"
 
 # 货号：1–3 个大写字母 + 5–8 位数字，两侧要边界
 _CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{5,8})(?![0-9])")
@@ -76,6 +76,16 @@ class ClaimCheck:
     def applicable(self) -> bool:
         return self.codes_total > 0 or self.numbers_total > 0
 
+    @property
+    def reason_codes(self) -> tuple[str, ...]:
+        """命中的类别码（2026-11-07 L1：内部审计/日志必须显式记录类别）。"""
+        codes: list[str] = []
+        if self.unsupported_codes:
+            codes.append("UNSUPPORTED_CODE")
+        if self.unsupported_numbers:
+            codes.append("UNSUPPORTED_NUMBER")
+        return tuple(codes)
+
 
 def extract_claims(answer: str) -> tuple[list[str], list[str]]:
     """抽出货号与「带单位的数值」两类 claim；区间/尺寸保持结构，不拆散。"""
@@ -102,6 +112,27 @@ def _supported_code(claim: str, evidence: str) -> bool:
     return any(match.group(1) == claim for match in _CODE.finditer(evidence))
 
 
+_UNIT_TOKEN = re.compile("|".join(sorted(_UNITS, key=len, reverse=True)))
+
+
+def _unit_reported_near(core: str, evidence: str, unit: str) -> bool:
+    """结构体出现在证据里时，同一行或上方表头必须**明确给出同一个单位**。
+
+    2026-11-07 L1 终审：`24×24mm` 不能被无关的 `24×24` 支持，必须有可确定关联的表头单位且一致。
+    做法：定位含结构体的行，把该行与其上一行（表头/邻近行）拼成上下文；claim 的单位必须出现在上下文里。
+    单位缺失（表头也没写）视为不支持——"仅结构相同不足以支持"。
+    """
+    lines = evidence.splitlines()
+    for index, line in enumerate(lines):
+        if core not in normalize(line):
+            continue
+        context = line if index == 0 else lines[index - 1] + "\n" + line
+        units = {token for token in _UNIT_TOKEN.findall(normalize(context))}
+        if unit in units:
+            return True
+    return False
+
+
 def _appears_with_boundary(needle: str, haystack: str) -> bool:
     """字面出现且左侧不是数字/小数点（`14mm` 不能被 `114mm` 支持）。"""
     if not needle:
@@ -110,31 +141,36 @@ def _appears_with_boundary(needle: str, haystack: str) -> bool:
     return re.search(pattern, haystack) is not None
 
 
-def _supported_number(claim: str, normalized_evidence: str) -> bool:
+def _supported_number(claim: str, evidence_texts: list[str]) -> bool:
     """带单位数值的支持判断。
 
-    严格先比"数值+单位+结构"。目录表格常把单位写在表头（单元格里只有 `24×24`），
-    因此对**区间/尺寸**再放宽一次：结构体（如 `24×24`、`14-70`）出现即算支持。
-    单值（如 `39.00元`）不放宽——价格必须带单位一起对得上。
+    先比"数值+单位+结构"的完整字面；对**区间/尺寸**允许单元格只写结构体（目录把单位放表头），
+    但必须能在同一行或邻近表头里找到**同一个单位**——单位缺失或单位不同都不算支持。
+    单值（如 `39.00元`）不放宽：价格必须带单位一起对得上。
     """
     normalized = normalize(claim)
-    if _appears_with_boundary(normalized, normalized_evidence):
+    if any(_appears_with_boundary(normalized, normalize(text)) for text in evidence_texts):
         return True
-    if "×" in normalized or "-" in normalized:
-        core = re.sub(r"[a-zA-Z%℃元只/箱]+$", "", normalized)
-        return _appears_with_boundary(core, normalized_evidence)
-    return False
+
+    if "×" not in normalized and "-" not in normalized:
+        return False
+
+    unit_match = re.search(r"[a-zA-Z%℃元只/箱]+$", normalized)
+    if unit_match is None:
+        return False
+    unit = unit_match.group(0)
+    core = normalized[: unit_match.start()]
+    return any(_unit_reported_near(core, text, unit) for text in evidence_texts)
 
 
 def check_answer(answer: str, evidence_texts: list[str]) -> ClaimCheck:
     """核验答案里的货号与带单位数值是否字面出现在**被引用的证据**中。"""
     codes, numbers = extract_claims(answer)
     joined = "\n".join(evidence_texts)
-    normalized_evidence = normalize(joined)
 
     missing_codes = tuple(code for code in codes if not _supported_code(code, joined))
     missing_numbers = tuple(
-        claim for claim in numbers if not _supported_number(claim, normalized_evidence)
+        claim for claim in numbers if not _supported_number(claim, evidence_texts)
     )
 
     return ClaimCheck(

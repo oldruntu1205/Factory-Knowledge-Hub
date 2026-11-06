@@ -185,7 +185,7 @@ def test_audit_records_consistency_fields(
         (body["trace_id"],),
     ).fetchone()
     assert row is not None
-    assert row[0] == "literal-support-v1"
+    assert row[0] == "literal-support-v2"
     assert (row[1], row[2]) == (1, 0)
     assert (row[3], row[4]) == (1, 0)
     assert row[5] is not None and row[5] >= 0
