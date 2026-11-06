@@ -3,6 +3,8 @@
 - 状态：已实现（2026-11-06，L1 有条件通过 → 落地）
 - 裁决记录：`_evidence/l1_reply_catalog_exact_20261106.md`（有条件通过）
 - 终审：**PASS**（`_evidence/l1_reply_catalog_final_20261106.md`）——五项补充要求全部闭环
+- 复核队列终审：**PASS**（`_evidence/l1_reply_catalog_conflicts_rereview2_20261106.md`）——
+  DROP_ALL 后重抽取、空/非空基线的抽取失败回滚均有逐字段证据
 - 起因：客户目录评测（`_evidence/catalog_benchmark_20261106.md`）——30 条货号查询，
   文本 RAG 的 recall@10 词法 **0/30**、混合 **2/30**；端到端 `ANSWERED` **0/10**、引用 **0/10**。
   已排除切块因素（整行完整存在于块内），属"精确匹配任务被模糊检索处理"。
