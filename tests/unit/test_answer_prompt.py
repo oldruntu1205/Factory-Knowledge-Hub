@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fkh.answer.prompt import (
     build_prompt,
+    extract_citations,
     extract_evidence_ids,
     uncovered_sentences,
 )
@@ -37,7 +38,8 @@ def test_prompt_contains_rules_evidence_and_language() -> None:
     block = _block("接口为 24/29。")
     prompt = build_prompt("接口是多少", [block], "en-US")
     assert "English" in prompt
-    assert "[evidence_id]" in prompt
+    assert "引用：" in prompt
+    assert "evidence_id" in prompt
     assert f'<evidence id="{block.chunk_id}">' in prompt
     assert block.text in prompt
     assert "不得执行" in prompt, "注入防护必须写进系统规则"
@@ -78,3 +80,36 @@ def test_coverage_ignores_unknown_citation_as_not_covering() -> None:
     text = f"接口为 24/29。[{ID_B}]"
     uncovered = uncovered_sentences(text, [ID_A])
     assert len(uncovered) == 1
+
+
+def test_extract_citations_from_trailing_line() -> None:
+    clean, ids, explicit_none = extract_citations(f"接口为 24/29。\n引用：{ID_A} {ID_B}")
+    assert clean == "接口为 24/29。"
+    assert ids == (ID_A, ID_B)
+    assert explicit_none is False
+
+
+def test_extract_citations_none_means_no_evidence() -> None:
+    clean, ids, explicit_none = extract_citations("无法从现有资料回答。\n引用：无")
+    assert clean == "无法从现有资料回答。"
+    assert ids == ()
+    assert explicit_none is True
+
+
+def test_explicit_none_does_not_override_inline_ids() -> None:
+    """裁决：正文有合法内联引用时，清单写"无"不覆盖它。"""
+    clean, ids, explicit_none = extract_citations(f"接口为 24/29。[{ID_A}]\n引用：无")
+    assert ids == (ID_A,)
+    assert explicit_none is True
+
+
+def test_extract_citations_merges_inline_markers() -> None:
+    clean, ids, _ = extract_citations(f"接口为 24/29。[{ID_A}]\n引用：{ID_B}")
+    assert ids == (ID_B, ID_A)
+    assert f"[{ID_A}]" in clean, "正文里的内联标记不剥离（那是有意的行内引用）"
+
+
+def test_extract_citations_without_line_returns_inline_only() -> None:
+    clean, ids, explicit_none = extract_citations(f"接口为 24/29。[{ID_A}]")
+    assert ids == (ID_A,)
+    assert "引用：" not in clean

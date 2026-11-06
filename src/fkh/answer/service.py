@@ -13,6 +13,8 @@ query 明文不落库、不进日志、不进异常：审计只存 HMAC 摘要�
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -20,7 +22,7 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
-from fkh.answer.prompt import build_prompt, extract_evidence_ids, uncovered_sentences
+from fkh.answer.prompt import build_prompt, extract_citations
 from fkh.catalog.lookup import chunk_contains_row, find_catalog_item
 from fkh.domain.catalog import count_distinct_codes, detect_catalog_intent
 from fkh.generation import GenerationError, TextGenerator
@@ -43,6 +45,11 @@ from fkh.retrieval.search import (
 
 CATALOG_MODEL_ID = "catalog-exact:v1"
 
+logger = logging.getLogger(__name__)
+
+# 展示层：把内联的内部 id 转成用户可读的引用序号（不裸露 chunk_id）
+_INLINE_ID = re.compile(r"\[([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\]")
+
 
 class AnswerNotConfigured(RuntimeError):
     """没有可用的本地推理能力（provider=none / 未配模型 / 模型不存在 / 缺审计密钥）。"""
@@ -53,6 +60,35 @@ class AnswerOutcome:
     payload: dict[str, Any]
     status: AnswerStatus
     model_id: str | None
+
+
+def _render_citations(answer_text: str, citations: Any) -> str:
+    """把正文里的内联内部 id 换成用户可读的引用序号（裁决：不得裸露内部 id）。"""
+    index = {citation.evidence_id: position + 1 for position, citation in enumerate(citations)}
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1).lower()
+        if key in index:
+            return f"[{index[key]}]"
+        return "[?]"
+
+    return _INLINE_ID.sub(replace, answer_text)
+
+
+def _refusal_reason(
+    plan: AnswerPlan,
+    proposed_ids: tuple[str, ...],
+    explicit_none: bool,
+    answer_text: str,
+) -> str:
+    """把"为什么没答"拆成可检索的原因（按裁决只在日志区分，不扩审计表结构）。"""
+    if plan.status is AnswerStatus.HUMAN_REVIEW_REQUIRED:
+        return "invalid_ids"
+    if not answer_text.strip():
+        return "empty_answer"
+    if not proposed_ids:
+        return "explicit_none" if explicit_none else "no_citation_line"
+    return "no_valid_citation"
 
 
 class AnswerService:
@@ -184,29 +220,35 @@ class AnswerService:
 
         blocks = assembly.blocks
         knowledge_id_by_version = {str(block.version_id): str(block.document_id) for block in blocks}
+        # 2026-11-06 业务决策 A：改为「正文 + 引用清单」。
+        # 引用清单行从展示正文剥离；逐句覆盖不再作为闸门（7B–14B 不遵守内联标注），
+        # 但"零有效引用"与"白名单外伪造 id"两条拦截保持不变。
+        answer_text, proposed_ids, explicit_none = extract_citations(generated.text)
+        if explicit_none and proposed_ids:
+            # 模型写了"引用：无"，正文却带合法内联引用：以合并结果为准，并记下协议冲突
+            logger.warning(
+                "answer protocol conflict: explicit none but inline ids present trace_id=%s",
+                trace_id,
+            )
         build = build_citations(
-            extract_evidence_ids(generated.text),
+            proposed_ids,
             blocks,
             knowledge_id_by_version=knowledge_id_by_version,
         )
-        plan = decide(blocks, build, answer_text=generated.text)
+        plan = decide(blocks, build, answer_text=answer_text)
 
-        if plan.status is AnswerStatus.ANSWERED:
-            uncovered = uncovered_sentences(
-                generated.text, [citation.evidence_id for citation in plan.citations]
+        if plan.status is not AnswerStatus.ANSWERED:
+            logger.info(
+                "answer not answered: status=%s code=%s reason=%s trace_id=%s",
+                plan.status.value,
+                plan.refusal_code.value if plan.refusal_code else None,
+                _refusal_reason(plan, proposed_ids, explicit_none, answer_text),
+                trace_id,
             )
-            if uncovered:
-                # 合法 ID 只证明"引用存在"，不证明"结论被覆盖"：降级为拒答 + 人工复核
-                plan = AnswerPlan(
-                    status=AnswerStatus.REFUSED,
-                    citations=plan.citations,
-                    requires_human_review=True,
-                    refusal_code=RefusalCode.INSUFFICIENT_EVIDENCE,
-                )
 
         payload = to_response(
             plan,
-            answer_text=generated.text,
+            answer_text=_render_citations(answer_text, plan.citations),
             trace_id=trace_id,
             index_generation=self._index_generation(context.tenant_id, blocks),
         )

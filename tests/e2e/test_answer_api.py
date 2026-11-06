@@ -248,21 +248,58 @@ def test_zero_valid_citations_is_refused(
     assert body["requires_human_review"] is True
 
 
-def test_legal_ids_but_uncovered_conclusion_is_refused(
+def test_unmarked_sentences_no_longer_block_answer(
     client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """合法 ID 只证明"引用存在"，不证明"结论被覆盖"（裁决 §3 的收紧）。"""
+    """2026-11-06 业务决策 A：逐句覆盖不再是闸门，但引用必须真实存在。
+
+    这条用例固定"放宽后的行为"：正文里可以有未标注的句子，只要引用清单里给了合法 id。
+    """
     seeded = _seed(admin, tenant)
     _use_generator(
         monkeypatch,
-        # 先写一句无引用的结论，再写一句有引用的——这样"合法 ID 但结论未覆盖"才可复现
-        f"这批货下周一定可以发货，价格还能再降三成。接口为 24/29。[{seeded['chunk']}]",
+        f"这批货下周一定可以发货，价格还能再降三成。接口为 24/29。\n引用：{seeded['chunk']}",
     )
 
     body = _ask(client, seeded["token"]).json()
+    assert body["status"] == "ANSWERED"
+    assert body["citations"][0]["evidence_id"] == seeded["chunk"]
+    assert "引用：" not in body["answer"], "引用清单属于元数据，不应出现在展示正文里"
+
+
+def test_citation_list_protocol_uses_system_side_locator(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """新协议：正文 + 末尾「引用：id」；version_id/locator 仍取系统侧。"""
+    seeded = _seed(admin, tenant)
+    _use_generator(monkeypatch, f"标准接口为 24/29 与 29/32。\n引用：{seeded['chunk']}")
+
+    body = _ask(client, seeded["token"]).json()
+    assert body["status"] == "ANSWERED"
+    assert body["answer"].strip() == "标准接口为 24/29 与 29/32。"
+    assert body["citations"][0]["version_id"] == seeded["version"]
+    assert body["citations"][0]["locator"] == {"block_index": 0, "page_start": 1}
+
+
+def test_citation_list_none_is_refused(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded = _seed(admin, tenant)
+    _use_generator(monkeypatch, "无法从现有资料回答。\n引用：无")
+    body = _ask(client, seeded["token"]).json()
     assert body["status"] == "REFUSED"
     assert body["refusal_code"] == "INSUFFICIENT_EVIDENCE"
-    assert body["requires_human_review"] is True
+
+
+def test_forged_id_in_citation_list_still_requires_review(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded = _seed(admin, tenant)
+    forged = "00000000-0000-0000-0000-000000000000"
+    _use_generator(monkeypatch, f"接口为 24/29。\n引用：{seeded['chunk']} {forged}")
+    body = _ask(client, seeded["token"]).json()
+    assert body["status"] == "HUMAN_REVIEW_REQUIRED"
+    assert [c["evidence_id"] for c in body["citations"]] == [seeded["chunk"]]
 
 
 # ---------------------------------------------------------------------------
@@ -408,3 +445,26 @@ def test_parent_restore_excludes_unauthorized_parent_content(
     assert secret not in prompt
     assert [c["evidence_id"] for c in body["citations"]] == [child]
     assert parent not in {c["evidence_id"] for c in body["citations"]}
+
+
+def test_inline_marker_is_rendered_as_readable_index(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """裁决：展示层不得裸露内部 chunk id，内联标记转成 [1]/[2]。"""
+    seeded = _seed(admin, tenant)
+    _use_generator(monkeypatch, f"标准接口为 24/29 与 29/32。[{seeded['chunk']}]")
+    body = _ask(client, seeded["token"]).json()
+    assert body["status"] == "ANSWERED"
+    assert "[1]" in body["answer"]
+    assert seeded["chunk"] not in body["answer"], "不得把内部 id 直接展示给用户"
+
+
+def test_explicit_none_with_valid_inline_still_answers(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """清单写"无"但正文有合法内联引用：以合并结果为准（协议冲突只记日志）。"""
+    seeded = _seed(admin, tenant)
+    _use_generator(monkeypatch, f"标准接口为 24/29。[{seeded['chunk']}]\n引用：无")
+    body = _ask(client, seeded["token"]).json()
+    assert body["status"] == "ANSWERED"
+    assert [c["evidence_id"] for c in body["citations"]] == [seeded["chunk"]]
