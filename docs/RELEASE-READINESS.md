@@ -169,3 +169,32 @@ SELECT created_at, status, refusal_code, consistency_rule, codes_total, codes_su
 3. 引用必须指向真实证据，展示层不得裸露内部 `chunk_id`；
 4. 一致性检查只做**字面**核验，不得宣称"答案正确"；
 5. 无证据时不调模型（`NO_EVIDENCE`），能力故障（503）不得伪装成业务拒答。
+
+---
+
+## 八、私域部署（改正：不需要域名）
+
+**本项目是私域部署，不存在"域名/证书"这一环。** 需要的是：
+
+| 要素 | 私域里的形态 |
+|---|---|
+| 访问地址 | 内网 `IP:8000`（或客户既有反代后面的内部路径），**不需要公网域名、不需要 TLS 证书** |
+| 进程托管 | docker compose（`deploy/compose`）或 systemd；端口默认只绑 `127.0.0.1` |
+| 数据库 | 内网 PG + pgvector；或客户既有 PG（需确认版本 ≥16、可装 pgvector） |
+| 模型 | 本机 Ollama（loopback），模型 blob 需随包分发 |
+| 备份 | 每日 `pg_dump` + WAL 归档，落在客户内网存储 |
+
+仓库里的部署物本身已经是内网口径：`docker-compose.yml` 只 `expose` 数据库端口、
+API 仅发布到 `127.0.0.1:${API_PORT}`；`Dockerfile` 不含任何域名/证书配置。
+
+### 真正卡住私域部署的三件事（不是域名）
+
+1. **ADR-01（部署区域与备份位置）未签署** —— `docker-compose.yml` 自己写着"签署前不得当作生产方案"。
+2. **离线依赖**：`Dockerfile` 需要拉 `python:3.12-slim` 与 `ghcr.io/astral-sh/uv`，`uv sync --frozen`
+   默认要联网。私域/气隙环境必须二选一：
+   - 在**外网预构建镜像**，以 `docker save` 导出 tar 交付，内网 `docker load`；
+   - 或预先生成 wheel 缓存，内网用 `uv sync --offline`（**未实测**，需在目标机验证）。
+3. **模型分发**：`qwen3:14b` 约 9GB，不在镜像内，需要单独拷贝 Ollama 模型目录
+   （或内网私有 registry 分发），并确认目标机显存/磁盘。
+
+以上三条都需要你确认目标环境后我才能动手；在此之前我不会假装"部署已经就绪"。
