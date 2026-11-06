@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from fkh.answer.tables import render_evidence
 from fkh.retrieval.context import ContextBlock
 
 # 契约里的 language 取值（api/models.py Language）
@@ -37,8 +38,10 @@ MIN_SUBSTANTIVE_CHARS = 6
 
 def build_prompt(query: str, blocks: Sequence[ContextBlock], language: str) -> str:
     name = LANGUAGE_NAMES.get(language, "简体中文")
+    # 表行改写成「货号 X：列名=值」：模型对裸字段列表基本读不动（实测试管规格答不出来）
     evidence = "\n\n".join(
-        f'<evidence id="{block.chunk_id}">\n{block.text.strip()}\n</evidence>' for block in blocks
+        f'<evidence id="{block.chunk_id}">\n{render_evidence(block.text.strip())}\n</evidence>'
+        for block in blocks
     )
     rules = [
         "1. 只能依据 <evidence> 标签内的内容回答，不得使用外部知识，不得猜测。",
@@ -61,7 +64,7 @@ def build_prompt(query: str, blocks: Sequence[ContextBlock], language: str) -> s
         "【回答格式（必须遵守）】\n"
         "先写答案正文：用完整句子，先说结论再给依据，不要只写一个词或短语；\n"
         "正文结束后必须另起一行，原样写：\n"
-        "引用：<evidence_id> <evidence_id> …\n"
+        "引用：id1 id2 …（只写裸 ID，不要写尖括号或 <evidence> 标签）\n"
         "（id 只能取自上面 <evidence id=\"...\"> 里的值；用到的每一份都要列上。）\n"
         "如果无法回答，最后一行写：引用：无\n"
     )

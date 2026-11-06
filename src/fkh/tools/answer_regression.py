@@ -128,6 +128,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cases", default=None, help="手写用例 JSON")
     parser.add_argument("--model", default=None, help="本地模型名；省略则不跑 RAG 段")
     parser.add_argument("--with-price-cases", type=int, default=0)
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="每条用例重复几次（本地模型有波动，单次结果不可靠）",
+    )
     parser.add_argument("--output", default=None)
     parser.add_argument("--currency", default="CNY", choices=["CNY"])
     args = parser.parse_args(argv)
@@ -216,32 +222,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows: list[dict[str, Any]] = []
         passed = 0
         for case in cases:
-            payload = _ask(
-                service,
-                query=case["query"],
-                tenant=tenant,
-                principal=principal,
-                scope=case.get("scope", "internal_product"),
-                trace_id=uuid.uuid4().hex,
-            )
-            conn.commit()
-            ok, reasons = evaluate_case(payload, case.get("expect", {}))
+            attempts: list[dict[str, Any]] = []
+            for _ in range(max(1, args.repeat)):
+                payload = _ask(
+                    service,
+                    query=case["query"],
+                    tenant=tenant,
+                    principal=principal,
+                    scope=case.get("scope", "internal_product"),
+                    trace_id=uuid.uuid4().hex,
+                )
+                conn.commit()
+                ok, reasons = evaluate_case(payload, case.get("expect", {}))
+                attempts.append(
+                    {
+                        "passed": ok,
+                        "reasons": reasons,
+                        "status": payload.get("status"),
+                        "answer": str(payload.get("answer", ""))[:120],
+                    }
+                )
+            # 严格口径：每条用例的**每一次**都必须通过，才算这条用例通过
+            ok = all(attempt["passed"] for attempt in attempts)
             passed += int(ok)
             rows.append(
                 {
                     "id": case["id"],
                     "passed": ok,
-                    "reasons": reasons,
-                    "status": payload.get("status"),
-                    "answer": str(payload.get("answer", ""))[:120],
+                    "attempts": attempts,
+                    "flaky": len({attempt["passed"] for attempt in attempts}) > 1,
+                    "reasons": next(
+                        (attempt["reasons"] for attempt in attempts if not attempt["passed"]), []
+                    ),
+                    "status": attempts[-1]["status"],
+                    "answer": attempts[-1]["answer"],
                 }
             )
 
-    summary = {"total": len(rows), "passed": passed, "pass_rate": round(passed / len(rows), 3) if rows else 0.0}
+    summary = {
+        "total": len(rows),
+        "passed": passed,
+        "pass_rate": round(passed / len(rows), 3) if rows else 0.0,
+        "repeat": max(1, args.repeat),
+        "flaky": [row["id"] for row in rows if row.get("flaky")],
+    }
     print(f"回归结果：{passed}/{len(rows)} 通过（{summary['pass_rate']}）")
     for row in rows:
         mark = "PASS" if row["passed"] else "FAIL"
-        print(f"  [{mark}] {row['id']}: {row['status']} {row['reasons']}")
+        note = "（多次结果不一致）" if row.get("flaky") else ""
+        print(f"  [{mark}] {row['id']}: {row['status']} {row['reasons']}{note}")
     if args.output:
         Path(args.output).write_text(
             json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=2),
