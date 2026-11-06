@@ -95,6 +95,7 @@
 list    --tenant <uuid> [--limit N] [--offset M]       # 待办组 + open_group_count / open_candidate_count
 resolve --tenant --version --code --keep <candidate_id> --actor <uuid> [--note]
 resolve --tenant --version --code --drop-all --actor <uuid> [--note]
+export  --tenant <uuid> [--format md|csv] [--out <path>]   # 只读导出待办清单
 ```
 
 约束（L1 裁决）：
@@ -108,6 +109,16 @@ resolve --tenant --version --code --drop-all --actor <uuid> [--note]
 真实目录实测（85 页）：`parsed=1314 inserted=1252 conflicts=29 unsupported=28`，
 队列里 **29 个待办组、62 条候选**。抽样可见冲突原因多为同一货号在两张表里规格写法不同、
 甚至价格不同（例如同货号分别标 57.00 与 56.00）——这正是必须人工判断的场景。
+
+## 7.2 运营演练（真实数据）
+
+`_evidence/catalog_ops_drill_20261106.md`：在真实目录版本上做了一次完整演练——
+
+- 决议前：冲突货号 `REFUSED/NO_EVIDENCE`；
+- KEEP 后：`ANSWERED`，价格与规格来自被选候选，带原文引用；
+- DROP_ALL 后：仍 `REFUSED/NO_EVIDENCE`；
+- 重抽取：决议保持（KEEP/DROP_ALL 未被改写），待办 29→27、候选 62→58；
+- 导出：27 组清单成功，只读不改数据。
 
 ## 8. 验收证据
 

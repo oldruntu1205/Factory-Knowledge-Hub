@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 from collections.abc import Sequence
+from pathlib import Path
 from uuid import UUID
 
 import psycopg
@@ -46,6 +49,67 @@ def _cmd_list(args: argparse.Namespace) -> int:
                     f"spec={candidate.spec} price={candidate.raw_price}"
                 )
                 print(f"    raw_text={candidate.raw_text}")
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """把待办导出成运营可读的清单（md / csv），只读、不改数据。"""
+    tenant = UUID(args.tenant)
+    with psycopg.connect(args.url, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        groups, candidates = open_summary(conn, tenant)
+        items = list_open_groups(conn, tenant, limit=args.limit, offset=args.offset)
+
+    if args.format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["code", "version_id", "candidate_id", "chunk_id", "spec", "price", "raw_text"])
+        for group in items:
+            for candidate in group.candidates:
+                writer.writerow(
+                    [
+                        group.code,
+                        group.version_id,
+                        candidate.candidate_id,
+                        candidate.chunk_id,
+                        candidate.spec,
+                        candidate.raw_price,
+                        candidate.raw_text,
+                    ]
+                )
+        text = buffer.getvalue()
+    else:
+        lines = [
+            f"# 目录冲突待办（tenant={tenant}）",
+            "",
+            f"- 待办组：**{groups}**",
+            f"- 候选行：{candidates}",
+            f"- 本页：{len(items)} 组（limit={args.limit}, offset={args.offset}）",
+            "",
+            "| 货号 | 版本 | 候选 | candidate_id | 规格 | 单价 | 原文行 |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for group in items:
+            for index, candidate in enumerate(group.candidates):
+                first = index == 0
+                lines.append(
+                    "| {code} | {version} | {cand} | `{cid}` | {spec} | {price} | {raw} |".format(
+                        code=group.code if first else "",
+                        version=str(group.version_id)[:8] if first else "",
+                        cand=first and str(len(group.candidates)) or "",
+                        cid=candidate.candidate_id,
+                        spec=candidate.spec.replace("|", "\\|"),
+                        price=candidate.raw_price,
+                        raw=candidate.raw_text.replace("|", "\\|"),
+                    )
+                )
+        text = "\n".join(lines) + "\n"
+
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"已导出 {len(items)} 组到 {args.out}")
+    else:
+        print(text)
     return 0
 
 
@@ -103,6 +167,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolve.add_argument("--actor", required=True, help="操作者 principal UUID（必须是该租户活跃 user）")
     resolve.add_argument("--note", default=None)
     resolve.set_defaults(func=_cmd_resolve)
+
+    export = sub.add_parser("export", help="导出待办清单（只读）")
+    export.add_argument("--tenant", required=True)
+    export.add_argument("--format", default="md", choices=["md", "csv"])
+    export.add_argument("--out", default=None, help="输出文件；省略则打印到 stdout")
+    export.add_argument("--limit", type=int, default=200)
+    export.add_argument("--offset", type=int, default=0)
+    export.set_defaults(func=_cmd_export)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

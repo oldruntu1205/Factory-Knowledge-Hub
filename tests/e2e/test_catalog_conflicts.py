@@ -622,3 +622,31 @@ def test_failure_after_removing_existing_item_restores_it(
     assert admin.execute(
         "SELECT count(*) FROM catalog_conflict_candidates WHERE tenant_id = %s", (tenant,)
     ).fetchone()[0] == 0
+
+
+def test_export_lists_open_groups(
+    admin: psycopg.Connection[Any],
+    app_conn: psycopg.Connection[Any],
+    pg_url: str,
+    tmp_path: Any,
+) -> None:
+    """运营导出：只读，输出待办组与候选原文（含价格，落本地文件而非仓库）。"""
+    from fkh.tools.catalog_conflicts import main as cli_main
+
+    seeded = _setup_conflict(admin, app_conn)
+    out = tmp_path / "open.md"
+    code = cli_main(
+        ["--url", pg_url, "export", "--tenant", seeded["tenant"], "--out", str(out)]
+    )
+    assert code == 0
+    text = out.read_text(encoding="utf-8")
+    assert "待办组" in text
+    assert "A112420" in text
+    assert LINE_A in text and LINE_B in text
+
+    # 导出不应改变任何决议或条目
+    set_tenant(admin, seeded["tenant"])
+    assert admin.execute(
+        "SELECT count(*) FROM catalog_conflict_groups WHERE tenant_id = %s AND status = 'OPEN'",
+        (seeded["tenant"],),
+    ).fetchone()[0] == 1
