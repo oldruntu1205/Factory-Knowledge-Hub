@@ -4,6 +4,8 @@
 - 裁决记录：`_evidence/l1_reply_answer_generation_20261106.md`（有条件通过）
 - 终审：**PASS**（`_evidence/l1_reply_answer_rereview_20261106.md`）——两项证据闭合：
   连接目标绑定已校验的数值 IP；不可读父块内容不进入提示词、不成为引用
+- 引用清单协议：**PASS**（`_evidence/l1_reply_citation_list_final_20261106.md`）——
+  协议解析/内联兼容/展示编号/系统侧 locator 均符合；准确率波动记为后续迭代项，不阻断协议验收
 - 真实取样：`_evidence/answer_real_sample_20261106.md`（本地 qwen3:14b，命中 4.8s / 无证据 0.0ms）
 - 相关：`docs/SPEC/retrieval.md`、`docs/SPEC/context-assembly.md`、`docs/ADR/README.md`（ADR-04）
 
