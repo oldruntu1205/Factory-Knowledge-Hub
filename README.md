@@ -68,7 +68,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 448 项：契约 + ACL + 状态机 + 解析 + 入库 + 审核 + 检索 + 混合召回 + 培训
+uv run pytest -q              # 462 项：契约 + ACL + 状态机 + 解析 + 入库 + 审核 + 检索 + 混合召回 + 培训
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
@@ -111,7 +111,7 @@ L1 第 5.2 节标注「DDL 实施前必须补强」的六项，已在 `0001`/`00
 
 ## 6. Phase 0 门禁
 
-实测结果（2026-11-05，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 448 项，其中 277 项依赖真实数据库、0 skip）：
+实测结果（2026-11-05，本地 pgserver PostgreSQL 16.2 + pgvector，`uv run pytest -q` 全绿 462 项，其中 291 项依赖真实数据库、0 skip）：
 
 | 门禁 | 证据 | 状态 |
 |---|---|---|

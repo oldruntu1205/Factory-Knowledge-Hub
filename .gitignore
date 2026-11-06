@@ -43,3 +43,4 @@ tmp???????
 _corpus/
 fkh-bench-pgdata/
 .bench-pgdata/
+.verify-0015-pgdata/

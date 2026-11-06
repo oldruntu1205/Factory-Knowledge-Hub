@@ -15,7 +15,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from fkh.authz.policy import AclPolicy
-from fkh.domain.catalog import CONFLICT_MARK, CatalogExtractionStats, parse_catalog_text
+from fkh.catalog.conflicts import ConflictError, add_candidates, create_group, lock_group
+from fkh.domain.catalog import CatalogExtractionStats, parse_catalog_text
 from fkh.domain.chunking.types import Chunk
 from fkh.domain.lexeme import segment_cjk
 from fkh.domain.state_machine import VersionStatus, assert_transition
@@ -247,8 +248,10 @@ class IngestionRepository:
     ) -> CatalogExtractionStats:
         """把该版本 child 块里的「货号 规格 单价」行抽成结构化事实。
 
-        幂等：已存在的同货号同原文行只计 duplicates，不重复写；
-        同货号不同原文行计 conflicts 且**不覆盖**（冲突需要人看，不能任取一条）。
+        冲突处理（2026-11-06 L1 裁决）：
+        - 同版本同货号出现不同原文行 → **不写 catalog_items**，把全部候选记入人工复核队列；
+        - 已有待办组时按组状态走：OPEN 只补候选、KEEP 按选中候选确保条目、DROP_ALL 确保无条目；
+        - 抽取与决议都锁同一行组记录，保证串行化。
         """
         rows = self._conn.execute(
             """SELECT id, chunk_text, locator
@@ -258,69 +261,173 @@ class IngestionRepository:
             (self._tenant, version_id),
         ).fetchall()
 
-        known = {
-            str(row[0]): str(row[1])
-            for row in self._conn.execute(
-                """SELECT code, raw_text FROM catalog_items
-                    WHERE tenant_id = %s AND version_id = %s""",
-                (self._tenant, version_id),
-            ).fetchall()
-        }
-
-        parsed = inserted = duplicates = conflicts = unsupported = 0
-        removed = 0
+        occurrences: dict[str, list[tuple[UUID, dict[str, Any], Any]]] = {}
+        parsed = unsupported = 0
         for chunk_id, chunk_text, locator in rows:
             result = parse_catalog_text(str(chunk_text))
             parsed += len(result.rows)
             unsupported += result.unsupported_count
             for item in result.rows:
-                prior = known.get(item.code)
-                if prior is not None:
-                    if prior == CONFLICT_MARK:
-                        continue
-                    if prior == item.raw_text:
-                        duplicates += 1
-                        continue
-                    # 同版本同货号出现不同原文行：**两条都不保留**，宁可查不到也不给错价
-                    # （L1：冲突行不得覆盖或任取一条）
-                    self._conn.execute(
-                        "DELETE FROM catalog_items WHERE tenant_id = %s AND version_id = %s AND code = %s",
-                        (self._tenant, version_id, item.code),
-                    )
-                    known[item.code] = CONFLICT_MARK
-                    conflicts += 1
-                    removed += 1
-                    continue
-                known[item.code] = item.raw_text
-                self._conn.execute(
-                    """INSERT INTO catalog_items
-                         (tenant_id, version_id, chunk_id, code, spec, raw_text, raw_price,
-                          price, currency, locator)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (tenant_id, version_id, code) DO NOTHING""",
-                    (
-                        self._tenant,
-                        version_id,
-                        chunk_id,
-                        item.code,
-                        item.spec,
-                        item.raw_text,
-                        item.price_text,
-                        item.price_value,
-                        currency,
-                        Jsonb(dict(locator) if locator else {}),
-                    ),
+                occurrences.setdefault(item.code, []).append(
+                    (UUID(str(chunk_id)), dict(locator) if locator else {}, item)
                 )
-                inserted += 1
+
+        inserted = duplicates = conflicts = 0
+        for code, entries in occurrences.items():
+            distinct_raw = {entry[2].raw_text for entry in entries}
+            locked = lock_group(self._conn, self._tenant, version_id, code)
+
+            if locked is not None:
+                group_id, status, selected = locked
+                conflicts += 1 if len(distinct_raw) > 1 else 0
+                if status == "DROP_ALL":
+                    existed = self._conn.execute(
+                        """SELECT 1 FROM catalog_items
+                            WHERE tenant_id = %s AND version_id = %s AND code = %s""",
+                        (self._tenant, version_id, code),
+                    ).fetchone()
+                    if existed is not None:
+                        raise ConflictError(
+                            f"货号 {code} 已被人工标记为不设条目，但库里存在条目，数据不一致"
+                        )
+                    continue
+                if status == "KEEP":
+                    candidate = self._conn.execute(
+                        """SELECT chunk_id, raw_text, spec, raw_price, price, locator
+                             FROM catalog_conflict_candidates
+                            WHERE tenant_id = %s AND group_id = %s AND candidate_id = %s""",
+                        (self._tenant, group_id, selected),
+                    ).fetchone()
+                    if candidate is None:
+                        raise ConflictError(f"货号 {code} 的选中候选丢失，数据不一致")
+                    self._insert_catalog_item(
+                        version_id=version_id,
+                        code=code,
+                        chunk_id=UUID(str(candidate[0])),
+                        raw_text=str(candidate[1]),
+                        spec=str(candidate[2]),
+                        raw_price=str(candidate[3]),
+                        price=candidate[4],
+                        currency=currency,
+                        locator=dict(candidate[5]) if candidate[5] else {},
+                    )
+                    duplicates += 1
+                    continue
+                # OPEN：只补候选（幂等），并确保未决议期间没有条目可被查到
+                self._conn.execute(
+                    "DELETE FROM catalog_items WHERE tenant_id = %s AND version_id = %s AND code = %s",
+                    (self._tenant, version_id, code),
+                )
+                add_candidates(
+                    self._conn,
+                    self._tenant,
+                    group_id,
+                    [
+                        (chunk_id, item.raw_text, item.spec, item.price_text, item.price_value, loc)
+                        for chunk_id, loc, item in entries
+                    ],
+                )
+                continue
+
+            if len(distinct_raw) == 1:
+                chunk_id, locator, item = entries[0]
+                wrote = self._insert_catalog_item(
+                    version_id=version_id,
+                    code=code,
+                    chunk_id=chunk_id,
+                    raw_text=item.raw_text,
+                    spec=item.spec,
+                    raw_price=item.price_text,
+                    price=item.price_value,
+                    currency=currency,
+                    locator=locator,
+                )
+                inserted += int(wrote)
+                duplicates += int(not wrote)
+                continue
+
+            group_id = create_group(self._conn, self._tenant, version_id, code)
+            payload = [
+                (chunk_id, item.raw_text, item.spec, item.price_text, item.price_value, loc)
+                for chunk_id, loc, item in entries
+            ]
+            # 之前可能已经写入过条目（先入库、后补了冲突块）：把它收编为候选并删除，
+            # 否则"未决议"期间仍能查到旧价格。
+            existing_item = self._conn.execute(
+                """SELECT chunk_id, raw_text, spec, raw_price, price, locator
+                     FROM catalog_items
+                    WHERE tenant_id = %s AND version_id = %s AND code = %s""",
+                (self._tenant, version_id, code),
+            ).fetchone()
+            if existing_item is not None:
+                payload.append(
+                    (
+                        UUID(str(existing_item[0])),
+                        str(existing_item[1]),
+                        str(existing_item[2]),
+                        str(existing_item[3]),
+                        existing_item[4],
+                        dict(existing_item[5]) if existing_item[5] else {},
+                    )
+                )
+                self._conn.execute(
+                    "DELETE FROM catalog_items WHERE tenant_id = %s AND version_id = %s AND code = %s",
+                    (self._tenant, version_id, code),
+                )
+            add_candidates(self._conn, self._tenant, group_id, payload)
+            conflicts += 1
 
         return CatalogExtractionStats(
             parsed=parsed,
-            # 入表数按净值报：因冲突被删掉的行不算"已插入"
-            inserted=inserted - removed,
+            inserted=inserted,
             duplicates=duplicates,
             conflicts=conflicts,
             unsupported=unsupported,
         )
+
+    def _insert_catalog_item(
+        self,
+        *,
+        version_id: UUID,
+        code: str,
+        chunk_id: UUID,
+        raw_text: str,
+        spec: str,
+        raw_price: str,
+        price: Any,
+        currency: str,
+        locator: dict[str, Any],
+    ) -> bool:
+        """写一条目录事实；已存在同原文行返回 False（幂等），已存在不同原文行则报不一致。"""
+        existing = self._conn.execute(
+            """SELECT raw_text FROM catalog_items
+                WHERE tenant_id = %s AND version_id = %s AND code = %s""",
+            (self._tenant, version_id, code),
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) == raw_text:
+                return False
+            raise ConflictError(f"货号 {code} 已有不同条目，拒绝覆盖（需人工处理）")
+
+        self._conn.execute(
+            """INSERT INTO catalog_items
+                 (tenant_id, version_id, chunk_id, code, spec, raw_text, raw_price,
+                  price, currency, locator)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                self._tenant,
+                version_id,
+                chunk_id,
+                code,
+                spec,
+                raw_text,
+                raw_price,
+                price,
+                currency,
+                Jsonb(locator or {}),
+            ),
+        )
+        return True
 
     def _insert_chunk(
         self,

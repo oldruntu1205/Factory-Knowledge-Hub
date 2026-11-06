@@ -78,6 +78,35 @@
 - `0014_catalog_items.sql`：建表 + RLS(FORCE) + `rag_queries` 两列；
 - `rollback/0014_down.sql`：**有数据则拒绝**（不自动清表），提示这些事实可由原文重抽。
 
+## 7.1 冲突人工复核队列（0015）
+
+冲突不再"静默剔除"，而是进队列等人判：
+
+| 表 | 职责 |
+|---|---|
+| `catalog_conflict_groups` | 一个 (tenant, version, code) 一组；状态 `OPEN` / `KEEP` / `DROP_ALL`；组表是**决议事实的唯一来源** |
+| `catalog_conflict_candidates` | 每个候选原文行一行，保留 `chunk_id` + `locator`；同组内同来源同原文去重 |
+
+流程（`uv run python -m fkh.tools.catalog_conflicts`）：
+
+```
+list    --tenant <uuid> [--limit N] [--offset M]       # 待办组 + open_group_count / open_candidate_count
+resolve --tenant --version --code --keep <candidate_id> --actor <uuid> [--note]
+resolve --tenant --version --code --drop-all --actor <uuid> [--note]
+```
+
+约束（L1 裁决）：
+
+- **身份可信**：`--actor` 必须是该租户的**活跃 user 主体**；agent/service 不得代签，伪造 UUID 被拒；
+- **组级原子**：锁组 → 校验 OPEN → 校验候选归属与版本可操作 → 写条目 → 落决议，同一事务；
+- **一次决议、不可改判**：重复决议报冲突；错判走新版本；
+- **重抽取尊重人工结论**：KEEP 后重抽取确保恰好一条且不覆盖；DROP_ALL 后重抽取不写条目；OPEN 只补候选；
+- **失效版本只读**：`REVOKED`/`DISCARDED`/`SUPERSEDED` 不可决议，其 KEEP 也不参与问答（查询按状态过滤）。
+
+真实目录实测（85 页）：`parsed=1314 inserted=1252 conflicts=29 unsupported=28`，
+队列里 **29 个待办组、62 条候选**。抽样可见冲突原因多为同一货号在两张表里规格写法不同、
+甚至价格不同（例如同货号分别标 57.00 与 56.00）——这正是必须人工判断的场景。
+
 ## 8. 验收证据
 
 `tests/e2e/test_catalog_flow.py`（10 项）：抽取与 unsupported 计数、非目录域/缺货币不抽取、
@@ -85,6 +114,9 @@
 结构化与原文不一致转人工、跨租户不可见、补录幂等。
 
 `tests/unit/test_catalog_parse.py`（6 项）：单价格行、区间价、缺价、表头忽略、重复货号、空文本。
+`tests/e2e/test_catalog_conflicts.py`（11 项）：候选与来源完整、OPEN 不可答、KEEP 回填并作答、
+DROP_ALL 无条目、重抽取尊重结论、重复决议被拒、伪造/跨租户/agent 身份被拒、候选跨组被拒、
+失效版本不可决议、并发决议只一个成功。
 
 ## 8.1 真实语料实测（2026-11-06，三爱思 85 页目录）
 

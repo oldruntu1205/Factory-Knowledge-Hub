@@ -83,6 +83,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0012 | 审计枚举补 `lexical-v2`（词法查询 AND→OR） | 已应用（本机） |
 | 0013 | 版本终止路径：新增 `DISCARDED` 状态 + `DISCARD` 动作 + `review_actions.from_status` + 培训联动 | 已应用（本机） |
 | 0014 | 目录结构化通道：`catalog_items` 表（RLS）+ `rag_queries.route/route_reason` | 已应用（本机） |
+| 0015 | 目录冲突人工复核队列：`catalog_conflict_groups` + `catalog_conflict_candidates`（RLS） | 已应用（本机） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
