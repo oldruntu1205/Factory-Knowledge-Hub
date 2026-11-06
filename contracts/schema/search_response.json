@@ -5,7 +5,11 @@
   "description": "POST /v1/knowledge/search 的 200 响应。按 L1 判决（2026-11-03）不返回 score、index_generation、候选数与过滤统计；scoring 如实标识本次实际执行的召回模式（2026-11-04 判决 Q1，取值集合已扩大，按旧 const 校验的调用方需放宽断言）。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["results", "scoring", "trace_id"],
+  "required": [
+    "results",
+    "scoring",
+    "trace_id"
+  ],
   "properties": {
     "results": {
       "type": "array",
@@ -22,25 +26,57 @@
           "heading_path"
         ],
         "properties": {
-          "chunk_id": { "type": "string", "format": "uuid" },
-          "version_id": { "type": "string", "format": "uuid" },
+          "chunk_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version_id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "knowledge_id": {
             "type": "string",
             "format": "uuid",
             "description": "knowledge_versions.document_id"
           },
-          "text_snippet": { "type": "string", "minLength": 1, "maxLength": 400 },
-          "snippet_truncated": { "type": "boolean" },
-          "locator": { "type": ["object", "null"] },
-          "heading_path": { "type": ["array", "null"], "items": { "type": "string" } }
+          "text_snippet": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "snippet_truncated": {
+            "type": "boolean"
+          },
+          "locator": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "heading_path": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
     "scoring": {
       "type": "string",
-      "enum": ["lexical-v2", "hybrid-rrf-v1"],
-      "description": "本次实际执行的召回模式：lexical-v2 = 纯词法（字级 OR 召回 + ts_rank_cd 排序；2026-11-04 起词法查询由 AND 改 OR，v1 为历史取值不再返回）；hybrid-rrf-v1 = 向量+词法 RRF 融合。由服务端配置决定（FKH_RETRIEVAL_MODE），客户端只能观察不能选择。"
+      "enum": [
+        "lexical-v3",
+        "lexical-v2",
+        "hybrid-rrf-v1"
+      ],
+      "description": "本次实际执行的召回模式：lexical-v3 = 纯词法（字级 OR 召回 + BM25 重排，2026-11-06 起）；lexical-v2 = 旧纯词法（ts_rank_cd 排序，历史取值仍可能返回）；hybrid-rrf-v1 = 向量+词法 RRF 融合。由服务端配置决定（FKH_RETRIEVAL_MODE），客户端只能观察不能选择。"
     },
-    "trace_id": { "type": "string", "minLength": 1 }
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    }
   }
 }

@@ -229,11 +229,11 @@ def test_default_config_is_lexical_and_schema_valid(
     response = _search(client, token)
     assert response.status_code == 200
     body = response.json()
-    assert body["scoring"] == "lexical-v2"
+    assert body["scoring"] == "lexical-v3"
     _assert_schema(body)
     assert chunk in _ids(response)
     assert [(row[3], row[4]) for row in _audit_rows(admin, tenant)] == [
-        (body["trace_id"], "lexical-v2")
+        (body["trace_id"], "lexical-v3")
     ]
 
 
@@ -268,7 +268,7 @@ def test_hybrid_executes_both_paths_and_reports_hybrid_scoring(
 
     # 同一份数据走纯词法：向量独有的块不得出现——反证 hybrid 的差异来自向量路
     lexical = _search(make_client(), token)
-    assert lexical.json()["scoring"] == "lexical-v2"
+    assert lexical.json()["scoring"] == "lexical-v3"
     assert dense_only not in _ids(lexical)
 
 
@@ -376,7 +376,7 @@ def test_lexical_mode_never_loads_embedding_dependencies(
     # 配了 bge-m3 但模式是词法：不得尝试加载模型，请求必须正常
     response = _search(make_client(retrieval_mode="lexical", embedding_provider="bge-m3"), token)
     assert response.status_code == 200
-    assert response.json()["scoring"] == "lexical-v2"
+    assert response.json()["scoring"] == "lexical-v3"
     assert chunk in _ids(response)
 
 
@@ -641,4 +641,4 @@ def test_context_endpoint_stays_lexical_even_when_search_is_hybrid(
     assert dense_only not in block_ids, "context 不得跟随 search 的混合模式"
 
     rows = [row for row in _audit_rows(admin, tenant) if row[3] == response.json()["trace_id"]]
-    assert [(row[0], row[4]) for row in rows] == [("SUCCEEDED", "lexical-v2")]
+    assert [(row[0], row[4]) for row in rows] == [("SUCCEEDED", "lexical-v3")]

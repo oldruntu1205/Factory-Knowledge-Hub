@@ -25,6 +25,7 @@
 | D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
+| H · 词法排序 | 字级 OR 召回 + BM25 重排（`lexical-v3`）：冻结用例 recall 0.48→0.62，+8/-1 | 完成（`_evidence/lexical_v3_benchmark_20261106.md`） | 2026-11-06 |
 | G · 目录精确通道 | 货号→规格/单价：入库抽取 + 确定性查询 + 问答路由（不经过模型） | 完成（`docs/SPEC/catalog-exact.md`；客户目录实测 recall 0/30 → 精确查询） | 2026-11-06 |
 | F · 问答 | `POST /v1/knowledge/answer`：检索 → 本地推理 → 引用核验 → 状态判定 → 审计 | 完成（**本地推理 only**，`FKH_LLM_PROVIDER=none` 默认 503；ADR-04 未签期唯一允许形态；`docs/SPEC/answer-generation.md`） | 2026-11-06 |
 | F · 培训 | 建课、出题、发布、分派、测验判分、进度 | 完成；签核与反馈未做 | 本轮 |
@@ -84,6 +85,7 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0013 | 版本终止路径：新增 `DISCARDED` 状态 + `DISCARD` 动作 + `review_actions.from_status` + 培训联动 | 已应用（本机） |
 | 0014 | 目录结构化通道：`catalog_items` 表（RLS）+ `rag_queries.route/route_reason` | 已应用（本机） |
 | 0015 | 目录冲突人工复核队列：`catalog_conflict_groups` + `catalog_conflict_candidates`（RLS） | 已应用（本机） |
+| 0016 | 词法排序 v3：审计枚举补 `lexical-v3`（BM25 字级重排） | 已应用（本机） |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让

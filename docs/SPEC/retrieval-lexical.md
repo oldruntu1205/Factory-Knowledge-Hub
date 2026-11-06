@@ -173,3 +173,29 @@ hybrid：向量路（pgvector 余弦，tenant/scope/状态/model_id 过滤，LIM
 > **终审结论（2026-11-04）**：`_evidence/l1_reply_hybrid_wiring_final_20261104.md` 提出两项修改
 > （迁移跳号回滚、回填原子性证据），落实于 `302c367` 后经 `_evidence/l1_reply_hybrid_wiring_rereview_20261104.md`
 > 判定 **PASS**。生产启用混合检索仍未授权（真实 BGE-M3 与 recall@10 待验收）。
+
+
+## 12. 排序 v3：BM25 字级重排（2026-11-06）
+
+**问题**：字级 OR + `ts_rank_cd` 没有 IDF。客户目录里每页重复同一段"高硼硅精选管材……以下规格均为常用规格"，
+高频字（的/管/规格）把这些样板段落顶上去，"试管"这样的判别词反而排不进来——实测「有哪些规格的试管？」
+top-5 里一个试管块都没有。
+
+**做法**：候选集不变（仍字级 OR + GIN），排序改为字级 BM25：
+
+```
+score = Σ_t idf(t)·tf·(k1+1) / (tf + k1·(1 - b + b·|d|/avg_len))
+idf(t) = ln((N - df + 0.5)/(df + 0.5) + 1)，k1 = 1.2，b = 0.75（固定）
+```
+
+- `N/df/avg_len` 取**同一可见性范围的全部块**（租户 + scope + 状态 + **ACL**），
+  不可见块不参与统计；
+- 候选窗口 `min(OVERFETCH × max_results, 200)`，`max_results > 200` 显式拒绝；
+  `SearchOutcome.window/truncated` 暴露截断诊断；
+- 一次 SQL 往返完成统计；per-term 统计用 `plainto_tsquery`，兼容运算符输入；
+- 审计 `retrieval_mode = lexical-v3`（迁移 0016），`lexical-v2` 保留为历史取值。
+
+**实测**：冻结用例 recall@10 **0.48 → 0.62**（改善 8 条、退化 1 条 H05）；
+5000 块规模检索中位 **142ms**（主要耗在全范围统计；10 万块级需要统计缓存/统计表，列为后续项）。
+
+**已知退让**：标口范围类查询的名次从 2 降到 3（BM25 更看重判别词，牺牲少量"关键词密度型"排序）。
