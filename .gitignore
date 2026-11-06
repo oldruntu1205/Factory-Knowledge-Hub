@@ -44,3 +44,4 @@ _corpus/
 fkh-bench-pgdata/
 .bench-pgdata/
 .verify-*-pgdata/
+.demo-pgdata/
