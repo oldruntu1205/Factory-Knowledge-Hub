@@ -38,3 +38,8 @@ tmp???????
 
 # 本地 HuggingFace 权重缓存（体积大，不进库）
 .hf-cache/
+
+# 客户语料与派生评测集（含价格等敏感信息，不进库）
+_corpus/
+fkh-bench-pgdata/
+.bench-pgdata/
