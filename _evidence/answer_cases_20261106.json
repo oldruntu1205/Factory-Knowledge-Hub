@@ -1,0 +1,40 @@
+{
+  "note": "答案回归用例：来自 2026-11-06 真实目录验收时发现的错答与代表性正确案例。not 里的串是已知错误答案，任何一条出现即判失败。本文件不含客户价格（价格类由工具从本地语料自动生成）。",
+  "cases": [
+    {
+      "id": "mat-01",
+      "query": "冷凝管是用什么材质做的？",
+      "expect": {"status": "ANSWERED", "any": ["高硼硅"], "require_citations": true}
+    },
+    {
+      "id": "spec-02",
+      "query": "冷凝管的标口范围是多少？",
+      "expect": {"status": "ANSWERED", "any": ["14", "70"], "not": ["24*24"], "require_citations": true}
+    },
+    {
+      "id": "custom-03",
+      "query": "可以定制长度吗？",
+      "expect": {"status": "ANSWERED", "any": ["定制"], "require_citations": true}
+    },
+    {
+      "id": "tax-04",
+      "query": "产品目录里的价格含税吗？",
+      "expect": {"status": "ANSWERED", "any": ["含税"], "not": ["不含税"], "require_citations": true}
+    },
+    {
+      "id": "tube-05",
+      "query": "有哪些规格的试管？",
+      "expect": {"status": "ANSWERED", "any": ["试管", "ml"], "require_citations": true}
+    },
+    {
+      "id": "stopper-06",
+      "query": "塞子的标口有哪些规格？",
+      "expect": {"status": "ANSWERED", "any": ["14/23", "19/26", "24/29"], "require_citations": true}
+    },
+    {
+      "id": "no-evidence-07",
+      "query": "你们的售后保修政策是什么？",
+      "expect": {"status": "REFUSED", "any": []}
+    }
+  ]
+}
