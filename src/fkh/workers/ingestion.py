@@ -24,6 +24,7 @@ from fkh.domain.lexeme import TOKENIZER_ID as LEXEME_TOKENIZER_ID
 from fkh.domain.parsing.registry import parse_document
 from fkh.domain.state_machine import VersionStatus
 from fkh.retrieval.embedding import Embedder
+from fkh.workers.index_maintenance import mark_generation_ready
 from fkh.workers.repository import DuplicateContentError, IngestionRepository
 
 VALID_CLASSIFICATIONS = range(0, 5)
@@ -186,6 +187,12 @@ def ingest_document(
                     version_id=version_id, currency=request.catalog_currency
                 )
                 catalog_note.append(catalog_stats.as_warning())
+
+        # 索引代就绪 + 可见水位前移（Rev2 §7.2：构建完成后才允许切换）
+        total_chunks = parent_count + child_count
+        # 只把该代标成 READY；**切换可见代是发布的动作**（§7.2：发布时校验后原子切换），
+        # 这样未审核版本即使块已存在也不会被检索看到（纵深防御）。
+        mark_generation_ready(conn, UUID(str(tenant_id)), generation, total_chunks)
 
         repo.transition(
             version_id=version_id,

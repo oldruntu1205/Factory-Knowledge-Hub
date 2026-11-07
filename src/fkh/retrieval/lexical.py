@@ -76,6 +76,8 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
    AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
    {VISIBILITY_PREDICATE}
    AND (%(version_filter)s::uuid[] IS NULL OR c.version_id = ANY(%(version_filter)s))
+   AND (v.status <> 'PUBLISHED_PUBLIC' OR c.index_generation <= COALESCE(
+         (SELECT generation FROM index_visibility iv WHERE iv.tenant_id = %(tenant)s), 0))
  ORDER BY score DESC, c.id
  LIMIT %(limit)s
 """
@@ -94,6 +96,8 @@ WITH visible AS (
      AND c.chunk_kind = 'child'
      AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
      AND (%(version_filter)s::uuid[] IS NULL OR c.version_id = ANY(%(version_filter)s))
+     AND (v.status <> 'PUBLISHED_PUBLIC' OR c.index_generation <= COALESCE(
+           (SELECT generation FROM index_visibility iv WHERE iv.tenant_id = %(tenant)s), 0))
      {visibility}
 ),
 terms AS (SELECT unnest(%(terms)s::text[]) AS term)

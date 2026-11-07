@@ -24,6 +24,7 @@ from fkh.domain.state_machine import (
     assert_publishable,
     assert_transition,
 )
+from fkh.workers.index_maintenance import assert_version_index_ready, switch_visible_generation
 
 
 class VersionNotFound(LookupError):
@@ -155,6 +156,9 @@ class ReviewService:
         version = self.lock(version_id)
         if version.status is not VersionStatus.REVIEWED:
             raise ReviewConflict(f"只有 REVIEWED 可批准为内部可用，当前为 {version.status}")
+        # §7.2 发布闸门：索引代必须 READY，再由发布动作原子切换可见代
+        generation = assert_version_index_ready(self._conn, self._tenant, version_id)
+
         action = assert_transition(version.status, VersionStatus.APPROVED_INTERNAL)
         self._conn.execute(
             """UPDATE knowledge_versions
@@ -163,6 +167,7 @@ class ReviewService:
             (VersionStatus.APPROVED_INTERNAL.value, actor_id, self._tenant, version_id),
         )
         self._record(version_id, actor_id, action.value, reason)
+        switch_visible_generation(self._conn, self._tenant, generation)
         return self.snapshot(version_id)
 
     def publish_public(
@@ -186,6 +191,8 @@ class ReviewService:
         if version.approved_by == public_approver:
             raise ReviewConflict("公开审批人不得与技术审批人为同一主体")
 
+        generation = assert_version_index_ready(self._conn, self._tenant, version_id)
+
         action = assert_transition(VersionStatus.APPROVED_INTERNAL, VersionStatus.PUBLISHED_PUBLIC)
         self._conn.execute(
             """UPDATE knowledge_versions
@@ -194,8 +201,8 @@ class ReviewService:
             (VersionStatus.PUBLISHED_PUBLIC.value, public_approver, self._tenant, version_id),
         )
         self._record(version_id, public_approver, action.value, reason)
+        switch_visible_generation(self._conn, self._tenant, generation)
 
-        generation = self._current_generation(version_id)
         self._emit(
             event_type="knowledge.version.published.v1",
             aggregate_id=version_id,

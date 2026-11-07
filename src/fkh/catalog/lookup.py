@@ -27,7 +27,9 @@ VISIBLE_STATUSES = ("APPROVED_INTERNAL", "PUBLISHED_PUBLIC")
 VISIBILITY_SQL = """(
     (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public')
  OR (%(internal)s AND v.status = 'APPROVED_INTERNAL')
-)"""
+)
+AND (v.status <> 'PUBLISHED_PUBLIC' OR c.index_generation <= COALESCE(
+      (SELECT generation FROM index_visibility iv WHERE iv.tenant_id = %(tenant)s), 0))"""
 
 
 @dataclass(frozen=True, slots=True)

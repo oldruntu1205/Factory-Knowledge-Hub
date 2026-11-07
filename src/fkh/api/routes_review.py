@@ -23,6 +23,7 @@ from fkh.api.models import PublishRequest, ReviewRequest
 from fkh.api.security import PrincipalDep
 from fkh.domain.review import ReviewConflict, ReviewService, VersionNotFound, VersionSnapshot
 from fkh.domain.state_machine import IllegalTransition, VersionStatus
+from fkh.workers.index_maintenance import IndexNotReady
 
 router = APIRouter(tags=["knowledge"])
 
@@ -62,7 +63,7 @@ def _translate(exc: Exception) -> ApiError:
     """
     if isinstance(exc, VersionNotFound):
         return ApiError(ErrorCode.ACCESS_DENIED, detail=str(exc))
-    if isinstance(exc, ReviewConflict | IllegalTransition):
+    if isinstance(exc, ReviewConflict | IllegalTransition | IndexNotReady):
         return ApiError(ErrorCode.VERSION_CONFLICT, detail=str(exc))
     return ApiError(ErrorCode.INTERNAL_ERROR, detail=type(exc).__name__)
 
@@ -85,7 +86,7 @@ def review(
             snapshot = service.reject(version_id, context.principal_id, payload.reason)
         else:
             snapshot = service.approve_internal(version_id, context.principal_id, payload.reason)
-    except (VersionNotFound, ReviewConflict, IllegalTransition) as exc:
+    except (VersionNotFound, ReviewConflict, IllegalTransition, IndexNotReady) as exc:
         raise _translate(exc) from exc
 
     return _view(snapshot)
@@ -117,7 +118,7 @@ def publish(
                 snapshot = current
             else:
                 raise ReviewConflict(f"当前状态 {current.status} 不可发布为内部可用")
-    except (VersionNotFound, ReviewConflict, IllegalTransition) as exc:
+    except (VersionNotFound, ReviewConflict, IllegalTransition, IndexNotReady) as exc:
         raise _translate(exc) from exc
 
     return _view(snapshot)
@@ -136,7 +137,7 @@ def revoke(
 
     try:
         snapshot = service.revoke(version_id, context.principal_id, reason)
-    except (VersionNotFound, ReviewConflict, IllegalTransition) as exc:
+    except (VersionNotFound, ReviewConflict, IllegalTransition, IndexNotReady) as exc:
         raise _translate(exc) from exc
 
     return _view(snapshot)
@@ -160,7 +161,7 @@ def discard(
 
     try:
         snapshot = service.discard(version_id, context.principal_id, reason)
-    except (VersionNotFound, ReviewConflict, IllegalTransition) as exc:
+    except (VersionNotFound, ReviewConflict, IllegalTransition, IndexNotReady) as exc:
         raise _translate(exc) from exc
 
     return _view(snapshot)
