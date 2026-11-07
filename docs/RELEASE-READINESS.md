@@ -36,7 +36,7 @@
 |---|---|
 | 词法排序 | BM25 字级重排（`lexical-v3`），冻结用例 recall@10 **0.48 → 0.62**（+8 / −1） |
 | 引用 | 答案带系统侧 `evidence_id/version_id/locator`；展示层把内部 id 转 `[1]/[2]` |
-| 一致性检查 | `literal-support-v3`：货号/带单位数值必须字面出现在被引用证据中，否则转人工；耗时 0–1ms |
+| 一致性检查 | `literal-support-v4`（2026-11-07）：货号/带单位数值必须字面出现在被引用证据中，否则转人工；单位白名单已补压力/时间/倍数/电功率等工业量纲（v3 曾漏掉 `0.2MPa`/`60秒`/`1.5倍`，实测出现过编造值被判 ANSWERED）；耗时 0–1ms |
 | 证据 | `_evidence/lexical_v3_benchmark_20261106.md`、`_evidence/answer_consistency_20261107.md` |
 
 ---

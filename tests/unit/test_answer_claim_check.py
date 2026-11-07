@@ -110,3 +110,56 @@ def test_reason_codes_name_the_class_of_failure() -> None:
 
     only_code = check_answer("货号 A999999。", ["货号 A112420 单价 39.00 元。"])
     assert only_code.reason_codes == ("UNSUPPORTED_CODE",)
+
+
+# --- literal-support-v4（2026-11-07 L1 裁决）：单位覆盖缺口 ---------------------
+# 背景：v3 的单位白名单只有 11 个，`0.2MPa` / `60秒` / `1.5倍` 不被提取，
+# 实测出现过"证据写 0.2MPa、答案编 1.5 倍工作压力，仍判 ANSWERED 并附真实引用"。
+
+EVIDENCE = "气密性测试：将冷凝管两端封堵后充气至 0.2MPa，保压 60 秒，压力下降不超过 5% 为合格。"
+
+
+def test_fabricated_multiplier_is_extracted_and_unsupported() -> None:
+    answer = "测试压力通常为设备工作压力的1.5倍或更高。"
+    codes, numbers = extract_claims(answer)
+    assert "1.5倍" in numbers
+    check = check_answer(answer, [EVIDENCE])
+    assert not check.supported
+    assert check.unsupported_numbers == ("1.5倍",)
+
+
+def test_pressure_and_duration_claims_are_supported_by_literal_evidence() -> None:
+    answer = "充气至0.2MPa，保压60秒，压力下降不超过5%。"
+    check = check_answer(answer, [EVIDENCE])
+    assert check.numbers_total == 3
+    assert check.supported, check.unsupported_numbers
+
+
+def test_multiplier_does_not_interchange_with_bare_number_or_percentage() -> None:
+    """裁决 §3：倍、裸数、百分比三者不得互认。"""
+    assert not check_answer("压力为1.5倍。", ["测试压力为 1.5"]).supported
+    assert not check_answer("压力为1.5倍。", ["测试压力为 150%"]).supported
+    # 相同数值+相同单位才算支持
+    assert check_answer("压力为1.5倍。", ["测试压力为 1.5倍"]).supported
+
+
+def test_same_value_in_uncited_evidence_does_not_support() -> None:
+    check = check_answer("充气至0.2MPa。", ["与本题无关的另一段：某处 0.5MPa"])
+    assert not check.supported
+
+
+def test_overlapping_units_and_boundaries() -> None:
+    """MPa 不能被拆成 Pa；单字母单位不能从复合单位里切出来。"""
+    codes, numbers = extract_claims("压力0.2MPa，转速3000rpm，功率1.5kW，扭矩5N·m。")
+    assert set(numbers) == {"0.2MPa", "3000rpm", "1.5kW", "5N·m"}
+    assert check_answer("压力0.2MPa。", ["充气至 0.2MPa"]).supported
+    # 证据里只有 kPa，不能支持 MPa
+    assert not check_answer("压力0.2MPa。", ["充气至 0.2kPa"]).supported
+    # 复合单位不得被拆开：证据写 5Nm，不能支持 5mm
+    assert not check_answer("长度5mm。", ["扭矩 5Nm"]).supported
+
+
+def test_model_codes_are_not_confused_with_units() -> None:
+    codes, numbers = extract_claims("A112420 规格 200mm。")
+    assert codes == ["A112420"]
+    assert numbers == ["200mm"]

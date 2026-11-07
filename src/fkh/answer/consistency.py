@@ -17,14 +17,37 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-RULE_VERSION = "literal-support-v3"
+RULE_VERSION = "literal-support-v4"
 
 # 货号：1–3 个大写字母 + 5–8 位数字，两侧要边界
 _CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{5,8})(?![0-9])")
 
 # 单位白名单：固定、区分大小写、带后向边界（不能是更长单词的前缀）
-_UNITS = ("kg", "mm", "cm", "ml", "g", "l", "L", "%", "℃", "元", "只/箱")
-_UNIT_PATTERN = "(?:" + "|".join(sorted(_UNITS, key=len, reverse=True)) + ")(?![A-Za-z])"
+#
+# v4（2026-11-07 L1 裁决）：补上制造业高频量纲。此前白名单只有 11 个单位，
+# 导致 `0.2MPa` / `60秒` / `1.5倍` 这类 claim 根本不被提取——实测出现
+# 「证据写 0.2MPa、答案编 1.5倍工作压力，仍判 ANSWERED 并附真实引用」。
+#
+# 排序按长度倒序，保证 `MPa` 不会被拆成 `Pa`、`N·m` 不被拆成 `m`。
+# 刻意不含 `号` / `目`（型号、序号、规格标签歧义大，需上下文识别另行立项）；
+# `倍` 只做字面支持，**不与百分比或裸数互认**（裁决 §3）。
+_UNITS = (
+    # 压力 / 力 / 扭矩
+    "MPa", "kPa", "Pa", "bar", "kgf", "N·m", "Nm",
+    # 时间
+    "秒", "分钟", "小时", "s", "min", "h",
+    # 电 / 功率
+    "V", "A", "kW", "W",
+    # 转速 / 温度 / 长度 / 容积 / 质量
+    "rpm", "°C", "℃", "mm", "cm", "ml", "kg", "g", "l", "L",
+    # 计数与计量
+    "%", "元", "只/箱",
+    # 倍数：只做字面匹配
+    "倍",
+)
+# 单字母单位（s/V/A/W/g/l/L/h）必须两侧都有边界，否则会从 `MPa`、`Nm` 等复合单位里切出一段
+_SINGLE_LETTER_UNITS = frozenset({"s", "V", "A", "W", "g", "l", "L", "h"})
+_UNIT_PATTERN = "(?:" + "|".join(sorted(_UNITS, key=len, reverse=True)) + ")(?![A-Za-z0-9])"
 
 _NUM = r"\d+(?:\.\d+)?"
 _RANGE = re.compile(rf"(?<![\d.])({_NUM})\s*[-~—至]\s*({_NUM})\s*({_UNIT_PATTERN})")
