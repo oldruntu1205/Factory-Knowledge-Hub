@@ -128,6 +128,16 @@ DOCUMENTS_PAGE = r"""<!doctype html>
         <input id="key" type="text" placeholder="留空按文件名生成" />
       </div>
       <div>
+        <label for="classification">分级（对外发布仅 C0）</label>
+        <select id="classification">
+          <option value="0">C0（可对外）</option>
+          <option value="1">C1</option>
+          <option value="2" selected>C2（内部）</option>
+          <option value="3">C3</option>
+          <option value="4">C4</option>
+        </select>
+      </div>
+      <div>
         <label for="currency">目录货币（仅 product_catalog）</label>
         <select id="currency">
           <option value="CNY">CNY</option>
@@ -206,6 +216,11 @@ function render() {
     if (d.status === "REVIEWED") {
       actions.push(`<button class="primary" data-publish="${esc(d.version_id)}">发布（内部可用）</button>`);
     }
+    if (d.status === "APPROVED_INTERNAL" && d.audience === "customer_public") {
+      actions.push(
+        `<button class="ok" data-publish-public="${esc(d.version_id)}">发布为对外（客户可见）</button>`
+      );
+    }
     return `
       <div class="doc">
         <div class="doc-head">
@@ -236,6 +251,11 @@ async function act(versionId, kind) {
     path = "/api/documents/" + encodeURIComponent(versionId) + "/review";
     payload = { decision: "REJECT", reason: reason || undefined };
     okText = "已驳回";
+  } else if (kind === "publish_public") {
+    if (!confirm("对外发布后，客户视角可以检索到这份内容。确认？")) return;
+    path = "/api/documents/" + encodeURIComponent(versionId) + "/publish";
+    payload = { audience: "customer_public" };
+    okText = "已对外发布（四眼原则：由对外发布审核员执行）";
   } else {
     path = "/api/documents/" + encodeURIComponent(versionId) + "/publish";
     payload = { audience: "internal" };
@@ -274,7 +294,7 @@ async function upload() {
     title: title,
     domain: domain,
     owner_department: document.getElementById("dept").value.trim() || "sales",
-    classification: 2,
+    classification: parseInt(document.getElementById("classification").value || "2", 10),
     audience: document.getElementById("audience").value,
     required_scope: document.getElementById("scope").value,
     acl_allow_roles: ["staff"],
@@ -315,6 +335,8 @@ document.addEventListener("click", ev => {
   if (pass) { act(pass.dataset.pass, "pass"); return; }
   const reject = ev.target.closest("[data-reject]");
   if (reject) { act(reject.dataset.reject, "reject"); return; }
+  const publishPublic = ev.target.closest("[data-publish-public]");
+  if (publishPublic) { act(publishPublic.dataset.publishPublic, "publish_public"); return; }
   const publish = ev.target.closest("[data-publish]");
   if (publish) { act(publish.dataset.publish, "publish"); }
 });

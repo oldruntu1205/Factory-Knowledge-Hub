@@ -151,6 +151,23 @@ def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
             conn.commit()
         principal = principal[0] if isinstance(principal, tuple) else principal
 
+        public_principal = conn.execute(
+            "SELECT id FROM principals WHERE tenant_id = %s AND external_subject = %s",
+            (tenant, "publisher@demo.local"),
+        ).fetchone()
+        if public_principal is None:
+            created = conn.execute(
+                """INSERT INTO principals (tenant_id, external_subject, principal_type)
+                   VALUES (%s, %s, 'user') RETURNING id""",
+                (tenant, "publisher@demo.local"),
+            ).fetchone()
+            assert created is not None
+            public_principal = created[0]
+            conn.commit()
+        public_principal = (
+            public_principal[0] if isinstance(public_principal, tuple) else public_principal
+        )
+
         chunks = int(
             _scalar(conn, "SELECT count(*) FROM knowledge_chunks WHERE tenant_id = %s", (tenant,))
         )
@@ -182,6 +199,7 @@ def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
         stats = {
             "tenant": str(tenant),
             "principal": str(principal),
+            "public_principal": str(public_principal),
             "chunks": int(
                 _scalar(
                     conn, "SELECT count(*) FROM knowledge_chunks WHERE tenant_id = %s", (tenant,)
@@ -207,8 +225,44 @@ def _scalar(conn: psycopg.Connection[Any], sql: str, params: tuple[Any, ...]) ->
     return 0 if row is None else row[0]
 
 
-def _issue_token(secret: str, tenant: str, principal: str) -> str:
+_SCOPES = {
+    # 内部运营：问答 + 冲突决议 + 文档审核 + 内部发布
+    "internal": [
+        "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
+        "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
+        "knowledge.publish",
+    ],
+    # 客户视角：只能问答/检索/看证据，且数据范围只有 customer_public
+    "customer": ["knowledge.answer", "knowledge.search", "evidence.read"],
+}
+
+_ALLOWED = {
+    # 内部运营同时具备内部与对外两类数据范围：他们负责上传/审核对外内容；
+    # 反过来客户令牌只有 customer_public，这才是隔离要演示的方向。
+    "internal": ["internal_product", "customer_public"],
+    "customer": ["customer_public"],
+    "publisher": ["internal_product", "customer_public"],
+}
+
+
+def _issue_token(secret: str, tenant: str, principal: str, *, perspective: str = "internal") -> str:
+    """签发演示令牌。
+
+    perspective 决定**授权面**，不只是 UI 开关：
+    - internal：内部运营（能审、能发布内部、数据范围 internal_product）
+    - customer：客户视角（无审核/发布权限，数据范围只有 customer_public）
+    - publisher：对外发布审核员（四眼原则里的第二人，可 publish_public）
+
+    用同一套 seed 数据、不同令牌，才能演示"隔离真的在服务端生效"。
+    """
     now = datetime.now(UTC)
+    scopes = list(_SCOPES.get(perspective, _SCOPES["internal"]))
+    roles = ["staff"]
+    if perspective == "publisher":
+        scopes = ["knowledge.publish_public", "knowledge.review", "knowledge.read"]
+        roles = ["public_approver"]
+    if perspective == "customer":
+        roles = ["customer"]
     payload = {
         "iss": "fkh.local",
         "aud": "fkh-api",
@@ -217,13 +271,9 @@ def _issue_token(secret: str, tenant: str, principal: str) -> str:
         "exp": now + timedelta(hours=12),
         "tenant_id": tenant,
         "principal_id": principal,
-        "roles": ["staff"],
-        "scope": [
-            "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
-            "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
-            "knowledge.publish",
-        ],
-        "allowed_scopes": ["internal_product"],
+        "roles": roles,
+        "scope": scopes,
+        "allowed_scopes": _ALLOWED[perspective],
     }
     return jwt.encode(payload, secret, algorithm="HS256")
 
@@ -231,7 +281,8 @@ def _issue_token(secret: str, tenant: str, principal: str) -> str:
 class DemoHandler(BaseHTTPRequestHandler):
     server_version = "fkh-demo"
     api_base = "http://127.0.0.1:8000"
-    token = ""
+    token = ""  # 兼容：未指定视角时代理用内部令牌
+    tokens: dict[str, str] = {}
     stats: dict[str, Any] = {}
     provider = "none"
 
@@ -285,13 +336,22 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         self._send(404, b'{"error":"not found"}', "application/json")
 
-    def _proxy(self, method: str, target: str, payload: bytes | None) -> None:
+    def _proxy(
+        self, method: str, target: str, payload: bytes | None, perspective: str = "internal"
+    ) -> None:
+        """转发到内部 API。
+
+        perspective 决定用哪套令牌——这是演示"服务端隔离"的关键：
+        客户视角走的是另一张令牌（无审核/发布权限、allowed_scopes 只有 customer_public），
+        不是前端开关。
+        """
+        token = self.tokens.get(perspective) or self.token
         request = urllib.request.Request(
             f"{self.api_base}{target}",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.token}",
+                "Authorization": f"Bearer {token}",
             },
             method=method,
         )
@@ -317,8 +377,16 @@ class DemoHandler(BaseHTTPRequestHandler):
             if action in ("review", "publish"):
                 length = int(self.headers.get("Content-Length") or 0)
                 payload = self.rfile.read(length) if length else b"{}"
+                perspective = "internal"
+                if action == "publish":
+                    try:
+                        if json.loads(payload or b"{}").get("audience") == "customer_public":
+                            # 四眼原则：对外发布由第二个主体执行
+                            perspective = "publisher"
+                    except json.JSONDecodeError:
+                        pass
                 self._proxy(
-                    "POST", f"/v1/knowledge/{version_id}/{action}", payload
+                    "POST", f"/v1/knowledge/{version_id}/{action}", payload, perspective
                 )
                 return
         if parsed.path.startswith("/api/conflicts/") and parsed.path.endswith("/resolve"):
@@ -334,12 +402,24 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         payload = self.rfile.read(length) if length else b"{}"
+        perspective = "internal"
+        token = self.token
+        try:
+            body = json.loads(payload or b"{}")
+            if body.pop("perspective", "internal") == "customer":
+                # 客户视角：换令牌 + 强制客户数据范围（服务端仍会再校验一次）
+                perspective = "customer"
+                token = self.tokens.get("customer") or self.token
+                body["knowledge_scope"] = "customer_public"
+                payload = json.dumps(body, ensure_ascii=False).encode()
+        except json.JSONDecodeError:
+            pass
         request = urllib.request.Request(
             f"{self.api_base}/v1/knowledge/answer",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.token}",
+                "Authorization": f"Bearer {token}",
             },
             method="POST",
         )
@@ -390,7 +470,14 @@ def main(argv: list[str] | None = None) -> int:
     stats = _seed(dsn, corpus, args.user)
     print(f"[demo] 播种完成：{stats}")
 
-    token = _issue_token(args.secret, stats["tenant"], stats["principal"])
+    internal_token = _issue_token(args.secret, stats["tenant"], stats["principal"])
+    customer_token = _issue_token(
+        args.secret, stats["tenant"], stats["principal"], perspective="customer"
+    )
+    publisher_token = _issue_token(
+        args.secret, stats["tenant"], stats.get("public_principal", stats["principal"]),
+        perspective="publisher",
+    )
 
     env = {
         **os.environ,
@@ -423,7 +510,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[demo] API 启动中 127.0.0.1:{args.api_port}")
 
     DemoHandler.api_base = f"http://127.0.0.1:{args.api_port}"
-    DemoHandler.token = token
+    DemoHandler.token = internal_token
+    DemoHandler.tokens = {
+        "internal": internal_token,
+        "customer": customer_token,
+        "publisher": publisher_token,
+    }
     DemoHandler.stats = stats
     DemoHandler.provider = args.provider
 

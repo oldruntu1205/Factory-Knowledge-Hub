@@ -59,6 +59,23 @@ uv run python -m fkh.tools.demo_app --provider ollama --model qwen3:14b
 
 `全部丢弃` 表示该货号不设条目（需二次确认）；决议一次性生效，错判走新版本。
 
+## 客户视角（对外发布链路）
+
+演示环境有**两套令牌**，切换的是服务端授权面，不是前端开关：
+
+| 视角 | 令牌 scope | 数据范围 |
+|---|---|---|
+| 内部视角 | answer/search/review/publish/ingest/catalog… | `internal_product` + `customer_public` |
+| 客户视角 | 仅 answer/search/evidence.read（**无审核、无发布**） | 只有 `customer_public` |
+
+演示顺序：
+
+1. 文档审核页上传一份 `audience=customer_public`、**分级 C0** 的说明文档（非 C0 不得对外发布）；
+2. 通过审核 → 发布（内部可用）→ 出现「发布为对外（客户可见）」，点它；
+   这一步由**第二个主体**执行（四眼原则：公开审批人不得与技术审批人同一）；
+3. 回问答页切到「客户视角」问售后保修 → ANSWERED，引用来自刚才那份文档；
+4. 客户视角问内部资料（如 `A112420 的单价`）→ `REFUSED / NO_EVIDENCE`，**不会泄漏内部价格**。
+
 ## 文档审核页（业务前端第二片）
 
 页面接 `POST/GET /v1/knowledge/documents` 与既有 review/publish（JWT 由演示服务端代持）。

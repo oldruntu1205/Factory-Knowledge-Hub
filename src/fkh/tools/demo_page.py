@@ -73,6 +73,7 @@ PAGE = r"""<!doctype html>
   <div class="search">
     <input id="q" type="text" placeholder="输入货号或问题，例如：A112420 的单价是多少？" autocomplete="off" />
     <button id="go">提问</button>
+      <div class="persp-wrap"><button class="persp on" data-persp="internal">内部视角</button><button class="persp" data-persp="customer">客户视角</button></div>
   </div>
   <div class="examples" id="examples"></div>
 
@@ -120,6 +121,15 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 }
 
+const state = { perspective: "internal" };
+const initialParams = new URLSearchParams(location.search);
+if (initialParams.get("persp") === "customer") {
+  state.perspective = "customer";
+  document.querySelectorAll("[data-persp]").forEach(b =>
+    b.classList.toggle("on", b.dataset.persp === "customer"));
+}
+
+
 async function ask() {
   const q = document.getElementById("q").value.trim();
   if (!q) return;
@@ -131,8 +141,10 @@ async function ask() {
     const r = await fetch("/api/answer", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({query: q, knowledge_scope: "internal_product",
-                            language: "zh-CN", max_evidence: 5})
+      body: JSON.stringify({query: q, knowledge_scope: state.perspective === "customer"
+                              ? "customer_public" : "internal_product",
+                            language: "zh-CN", max_evidence: 5,
+                            perspective: state.perspective})
     });
     const body = await r.json();
     render(q, body, r.status);
@@ -187,6 +199,14 @@ document.addEventListener("click", ev => {
 });
 
 document.getElementById("go").onclick = ask;
+
+document.querySelectorAll("[data-persp]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    state.perspective = btn.dataset.persp;
+    document.querySelectorAll("[data-persp]").forEach(b => b.classList.toggle("on", b === btn));
+    document.getElementById("out").innerHTML = "";
+  });
+});
 document.getElementById("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
 loadStatus();
 
