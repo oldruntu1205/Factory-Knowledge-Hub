@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import jwt
 import psycopg
 
+from fkh.tools.conflict_page import CONFLICTS_PAGE
 from fkh.tools.demo_page import PAGE
 
 DEMO_TENANT_NAME = "三爱思演示"
@@ -215,7 +216,7 @@ def _issue_token(secret: str, tenant: str, principal: str) -> str:
         "tenant_id": tenant,
         "principal_id": principal,
         "roles": ["staff"],
-        "scope": ["knowledge.answer", "knowledge.search"],
+        "scope": ["knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve"],
         "allowed_scopes": ["internal_product"],
     }
     return jwt.encode(payload, secret, algorithm="HS256")
@@ -240,9 +241,17 @@ class DemoHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 约定
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/api/conflicts":
+            query = f"?{parsed.query}" if parsed.query else ""
+            self._proxy("GET", f"/v1/catalog/conflicts{query}", None)
+            return
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if path in ("/conflicts", "/conflicts/"):
+            self._send(200, CONFLICTS_PAGE.encode(), "text/html; charset=utf-8")
             return
         if path == "/api/status":
             body = {
@@ -256,8 +265,36 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         self._send(404, b'{"error":"not found"}', "application/json")
 
+    def _proxy(self, method: str, target: str, payload: bytes | None) -> None:
+        request = urllib.request.Request(
+            f"{self.api_base}{target}",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+            },
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                self._send(response.status, response.read(), "application/json")
+        except urllib.error.HTTPError as exc:
+            self._send(exc.code, exc.read(), "application/json")
+        except Exception as exc:  # noqa: BLE001
+            body = json.dumps({"status": "ERROR", "answer": f"演示代理失败：{exc}"}, ensure_ascii=False)
+            self._send(502, body.encode(), "application/json")
+
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/api/answer":
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/conflicts/") and parsed.path.endswith("/resolve"):
+            group_id = parsed.path.removeprefix("/api/conflicts/").removesuffix("/resolve")
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length) if length else b"{}"
+            self._proxy(
+                "POST", f"/v1/catalog/conflicts/{group_id}/resolve", payload
+            )
+            return
+        if parsed.path != "/api/answer":
             self._send(404, b'{"error":"not found"}', "application/json")
             return
         length = int(self.headers.get("Content-Length") or 0)
