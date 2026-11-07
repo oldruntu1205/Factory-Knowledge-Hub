@@ -412,12 +412,13 @@ class DemoHandler(BaseHTTPRequestHandler):
         token = self.token
         try:
             body = json.loads(payload or b"{}")
+            # perspective 是演示页字段，**任何视角都要从请求体里摘掉**，
+            # 否则会被 API 的严格校验拒掉（extra="forbid" → body.perspective: not allowed）
             if body.pop("perspective", "internal") == "customer":
-                # 客户视角：换令牌 + 强制客户数据范围（服务端仍会再校验一次）
                 perspective = "customer"
                 token = self.tokens.get("customer") or self.token
                 body["knowledge_scope"] = "customer_public"
-                payload = json.dumps(body, ensure_ascii=False).encode()
+            payload = json.dumps(body, ensure_ascii=False).encode()
         except json.JSONDecodeError:
             pass
         request = urllib.request.Request(

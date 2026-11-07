@@ -205,6 +205,9 @@ def test_correct_pressure_answer_is_answered(corpus: dict[str, Any]) -> None:
     )
     assert outcome.payload["status"] == str(AnswerStatus.ANSWERED), outcome.payload
     assert outcome.payload["citations"], "答案应当带引用"
+    view = outcome.payload["literal_support"]
+    assert view is not None and view["supported"] is True, view
+    assert view["numbers"]["total"] >= 2, view   # 0.2MPa 与 60秒 都应被覆盖
 
 
 def test_fabricated_multiplier_is_human_review(corpus: dict[str, Any]) -> None:
@@ -229,6 +232,14 @@ def test_fabricated_multiplier_is_human_review(corpus: dict[str, Any]) -> None:
     assert payload["status"] == str(AnswerStatus.HUMAN_REVIEW_REQUIRED), payload
     assert payload["refusal_code"] == str(RefusalCode.UNSUPPORTED_CLAIM)
     assert payload["unsupported"]["numbers"] >= 1, payload
+
+    # 对外视图：调用方要能看出"哪个 token 没被支持"，而不是只有个数
+    view = payload["literal_support"]
+    assert view is not None, payload
+    assert view["rule"].startswith("literal-support-v")
+    assert view["applicable"] is True and view["supported"] is False
+    assert "1.5倍" in view["numbers"]["unsupported"], view
+    assert view["disclaimer"], "必须带'不证明语义一致'的限定说明"
 
 
 def test_wrong_pressure_value_is_human_review(corpus: dict[str, Any]) -> None:
@@ -270,6 +281,7 @@ def test_no_evidence_question_is_refused(corpus: dict[str, Any]) -> None:
     """知识库里没有的内容 → REFUSED / NO_EVIDENCE（不许编）。"""
     outcome = _ask(corpus, "量子计算机的超导材料是什么？", "我不知道。\n引用：无")
     assert outcome.payload["status"] == str(AnswerStatus.REFUSED), outcome.payload
+    assert outcome.payload["literal_support"] is None, "非 ANSWERED 路径不执行一致性检查"
     assert outcome.payload["refusal_code"] in {
         str(RefusalCode.NO_EVIDENCE),
         str(RefusalCode.INSUFFICIENT_EVIDENCE),

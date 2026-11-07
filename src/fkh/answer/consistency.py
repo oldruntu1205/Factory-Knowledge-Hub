@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 RULE_VERSION = "literal-support-v4"
 
@@ -98,6 +99,32 @@ class ClaimCheck:
     @property
     def applicable(self) -> bool:
         return self.codes_total > 0 or self.numbers_total > 0
+
+    def to_public(self) -> dict[str, Any]:
+        """给调用方看的视图（2026-11-07）。
+
+        只回**答案里**被判定不受支持的货号/数值 token——它们本来就出现在 answer 正文里，
+        不额外泄漏证据内容。附带 fixed disclaimer：这项检查只做字面支持，不证明语义一致。
+        """
+        return {
+            "rule": RULE_VERSION,
+            "applicable": self.applicable,
+            "supported": self.supported,
+            "codes": {
+                "total": self.codes_total,
+                "supported": self.codes_supported,
+                "unsupported": list(self.unsupported_codes),
+            },
+            "numbers": {
+                "total": self.numbers_total,
+                "supported": self.numbers_supported,
+                "unsupported": list(self.unsupported_numbers),
+            },
+            "disclaimer": (
+                "仅表示所覆盖的货号/带单位数值在**被引用的证据**中字面出现；"
+                "通过不代表语义一致，未通过也不代表一定错误（可能是改写或单位换算）。"
+            ),
+        }
 
     @property
     def reason_codes(self) -> tuple[str, ...]:

@@ -5,12 +5,31 @@
   "description": "L1 §6.3。status 为 REFUSED 时必须带 refusal_code；ANSWERED 时必须至少一条 citation。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "answer", "citations", "requires_human_review", "trace_id", "index_generation"],
+  "required": [
+    "status",
+    "answer",
+    "citations",
+    "requires_human_review",
+    "trace_id",
+    "index_generation"
+  ],
   "properties": {
-    "status": { "type": "string", "enum": ["ANSWERED", "REFUSED", "HUMAN_REVIEW_REQUIRED"] },
-    "answer": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ANSWERED",
+        "REFUSED",
+        "HUMAN_REVIEW_REQUIRED"
+      ]
+    },
+    "answer": {
+      "type": "string"
+    },
     "refusal_code": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "enum": [
         "NO_EVIDENCE",
         "INSUFFICIENT_EVIDENCE",
@@ -23,49 +42,220 @@
         null
       ]
     },
-    "requires_human_review": { "type": "boolean" },
+    "requires_human_review": {
+      "type": "boolean"
+    },
     "unsupported": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "答案—证据一致性检查的未支持数量；仅回数量不回原文。某类没有 claim 时为 null（不适用），不是 0% 或 100%。",
       "additionalProperties": false,
-      "required": ["codes", "numbers"],
+      "required": [
+        "codes",
+        "numbers"
+      ],
       "properties": {
-        "codes": { "type": ["integer", "null"], "minimum": 0 },
-        "numbers": { "type": ["integer", "null"], "minimum": 0 }
+        "codes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "numbers": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
       }
     },
-    "trace_id": { "type": "string", "minLength": 1 },
-    "index_generation": { "type": "integer", "minimum": 0 },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "index_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
     "citations": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["evidence_id", "knowledge_id", "version_id", "locator"],
+        "required": [
+          "evidence_id",
+          "knowledge_id",
+          "version_id",
+          "locator"
+        ],
         "properties": {
-          "evidence_id": { "type": "string" },
-          "knowledge_id": { "type": "string" },
-          "version_id": { "type": "string" },
-          "locator": { "type": "object" }
+          "evidence_id": {
+            "type": "string"
+          },
+          "knowledge_id": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          },
+          "locator": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "literal_support": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "一致性检查（literal-support-v4）的对外视图。null=未执行（非 ANSWERED 路径）。只覆盖货号与带单位数值的字面支持，不证明语义一致。",
+      "additionalProperties": false,
+      "required": [
+        "rule",
+        "applicable",
+        "supported",
+        "codes",
+        "numbers",
+        "disclaimer"
+      ],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "检查规则版本，如 literal-support-v4"
+        },
+        "applicable": {
+          "type": "boolean",
+          "description": "答案里是否出现了被检查的 claim"
+        },
+        "supported": {
+          "type": "boolean",
+          "description": "所有被覆盖的 claim 是否都字面受支持"
+        },
+        "codes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total",
+            "supported",
+            "unsupported"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "supported": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unsupported": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "numbers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total",
+            "supported",
+            "unsupported"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "supported": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unsupported": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "disclaimer": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "status": { "const": "REFUSED" } }, "required": ["status"] },
-      "then": { "required": ["refusal_code"], "properties": { "refusal_code": { "type": "string" } } }
-    },
-    {
-      "if": { "properties": { "status": { "const": "ANSWERED" } }, "required": ["status"] },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "REFUSED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
       "then": {
-        "required": ["citations"],
-        "properties": { "citations": { "minItems": 1 } }
+        "required": [
+          "refusal_code"
+        ],
+        "properties": {
+          "refusal_code": {
+            "type": "string"
+          }
+        }
       }
     },
     {
-      "if": { "properties": { "status": { "const": "HUMAN_REVIEW_REQUIRED" } }, "required": ["status"] },
-      "then": { "properties": { "requires_human_review": { "const": true } } }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "ANSWERED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "citations"
+        ],
+        "properties": {
+          "citations": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "HUMAN_REVIEW_REQUIRED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "requires_human_review": {
+            "const": true
+          }
+        }
+      }
     }
   ]
 }

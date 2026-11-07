@@ -292,6 +292,7 @@ class AnswerService:
             trace_id=trace_id,
             index_generation=self._index_generation(context.tenant_id, blocks),
             unsupported=_unsupported_counts(consistency),
+            literal_support=consistency.to_public() if consistency is not None else None,
         )
         self._persist(
             context,

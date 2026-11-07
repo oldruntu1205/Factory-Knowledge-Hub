@@ -52,6 +52,11 @@ PAGE = r"""<!doctype html>
   .cite { font-size:13px; border-left:2px solid var(--accent); padding:4px 0 4px 10px;
           margin-top:8px; color:var(--muted); }
   .cite code { color:var(--text); font-size:12px; }
+  .ls-bad { margin-top:10px; padding:10px 12px; border-radius:8px; font-size:13px;
+            border:1px solid #7a5b12; background:#241d07; color:#ffd479; }
+  .ls-bad code { color:#ffd479; }
+  .ls-note { color:#c9a94a; font-size:12px; }
+  .ls-ok { margin-top:10px; font-size:12.5px; color:#8b9bb0; }
   .cite-open { margin-right:8px; padding:2px 8px; font-size:12px; border-radius:6px;
                border:1px solid var(--line); background:transparent; color:var(--accent); cursor:pointer; }
   .cite-open:hover { border-color:var(--accent); }
@@ -171,6 +176,19 @@ function render(q, body, status) {
   html += '<div class="card"><h2>回答</h2>';
   html += '<span class="badge b-' + esc(st) + '">' + esc(st) + '</span>';
   if (body.refusal_code) html += '<span class="meta">reason: ' + esc(body.refusal_code) + '</span>';
+
+  const ls = body.literal_support;
+  if (ls) {
+    const bad = [...(ls.numbers?.unsupported || []), ...(ls.codes?.unsupported || [])];
+    if (bad.length) {
+      html += '<div class="ls-bad">数值/货号未被引用证据支持：<code>' +
+              bad.map(esc).join('、') + '</code>（规则 ' + esc(ls.rule) + '）<br>' +
+              '<span class="ls-note">这不等于一定错，但需要人复核；引用存在不代表数值受支持。</span></div>';
+    } else if (ls.applicable) {
+      html += '<div class="ls-ok">一致性检查：' + esc(ls.rule) + ' 通过（' +
+              ls.numbers.total + ' 个数值 / ' + ls.codes.total + ' 个货号字面受支持）</div>';
+    }
+  }
   html += '<div class="answer" style="margin-top:10px">' + esc(body.answer || "（空）") + '</div>';
   if (body.unsupported) {
     html += '<div class="meta">一致性检查未支持数量：code ' + esc(body.unsupported.codes ?? "不适用") +

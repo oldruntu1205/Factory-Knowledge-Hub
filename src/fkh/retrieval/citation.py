@@ -174,6 +174,7 @@ def to_response(
     trace_id: str,
     index_generation: int,
     unsupported: dict[str, int | None] | None = None,
+    literal_support: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """组装成 AnswerResponse（contracts/schema/answer_response.json）。
 
@@ -184,6 +185,7 @@ def to_response(
 
     payload: dict[str, Any] = {
         "status": plan.status.value,
+        "literal_support": literal_support,
         "answer": answer_text,
         "requires_human_review": plan.requires_human_review,
         "trace_id": trace_id,
