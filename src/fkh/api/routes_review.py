@@ -33,7 +33,11 @@ def _parse_uuid(raw: str, field: str) -> UUID:
     try:
         return UUID(raw)
     except ValueError as exc:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail=f"{field} 不是合法 UUID") from exc
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=f"{field} 不是合法 UUID",
+            hint=f"{field}: must be a UUID",
+        ) from exc
 
 
 def _view(snapshot: VersionSnapshot) -> dict[str, Any]:

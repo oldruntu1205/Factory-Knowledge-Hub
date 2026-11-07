@@ -35,7 +35,8 @@
         },
         "message": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "固定文案。422/413 会在括号内附「字段 + 规则」的简短提示（如 `domain: not one of the allowed values`），**不包含**提交的原始值、内部标识、路径或模型输出；401/403/404 保持固定文案，避免用错误信息探测资源存在性。"
         },
         "trace_id": {
           "type": "string",

@@ -29,7 +29,11 @@ def _parse_uuid(raw: str) -> UUID:
     try:
         return UUID(raw)
     except ValueError as exc:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail="evidence_id 不是合法 UUID") from exc
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail="evidence_id 不是合法 UUID",
+            hint="evidence_id: must be a UUID",
+        ) from exc
 
 
 @router.get("/v1/evidence/{evidence_id}", summary="受控证据定位")

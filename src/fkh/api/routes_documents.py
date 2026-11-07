@@ -128,14 +128,23 @@ def _decode(content_base64: str) -> bytes:
     try:
         raw = base64.b64decode(content_base64, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail="content_base64 不是合法 base64") from exc
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail="content_base64 不是合法 base64",
+            hint="content_base64: must be valid base64",
+        ) from exc
     if len(raw) > MAX_DECODED_BYTES:
         raise ApiError(
             ErrorCode.PAYLOAD_TOO_LARGE,
             detail=f"解码后 {len(raw)} 字节，超过上限 {MAX_DECODED_BYTES}",
+            hint=f"content_base64: decoded size must be <= {MAX_DECODED_BYTES} bytes",
         )
     if not raw.strip():
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail="正文为空")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail="正文为空",
+            hint="content_base64: decoded body must not be empty",
+        )
     return raw
 
 
@@ -152,7 +161,11 @@ def upload_document(
     context.require_scope("knowledge.ingest")
 
     if payload.domain not in VALID_DOMAINS:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail=f"domain 必须是 {VALID_DOMAINS} 之一")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=f"domain 必须是 {VALID_DOMAINS} 之一",
+            hint="domain: not one of the allowed values",
+        )
     if payload.required_scope not in context.allowed_scopes:
         # 数据范围授权：不能上传到自己的授权范围之外
         raise ApiError(
@@ -227,13 +240,29 @@ def list_documents(
 ) -> dict[str, Any]:
     context.require_scope("knowledge.read")
     if status is not None and status not in VALID_STATUSES:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail=f"status 必须是 {VALID_STATUSES} 之一")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=f"status 必须是 {VALID_STATUSES} 之一",
+            hint="status: not one of the allowed values",
+        )
     if domain is not None and domain not in VALID_DOMAINS:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail=f"domain 必须是 {VALID_DOMAINS} 之一")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=f"domain 必须是 {VALID_DOMAINS} 之一",
+            hint="domain: not one of the allowed values",
+        )
     if not 1 <= limit <= MAX_LIMIT:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail=f"limit 必须在 1–{MAX_LIMIT}")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=f"limit 必须在 1–{MAX_LIMIT}",
+            hint=f"limit: must be between 1 and {MAX_LIMIT}",
+        )
     if offset < 0:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, detail="offset 不能为负")
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail="offset 不能为负",
+            hint="offset: must be >= 0",
+        )
 
     bind_tenant(conn, context.tenant_id)
     params: dict[str, Any] = {

@@ -476,3 +476,62 @@ def test_lying_content_length_cannot_bypass_cap(
         "SELECT count(*) FROM knowledge_documents WHERE tenant_id = %s", (seeded["tenant"],)
     ).fetchone()[0]
     assert docs == 0
+
+
+# --- 422/413 的字段级提示（2026-11-07：集成方反馈"Request payload is invalid"无法定位）--
+def test_validation_message_names_the_field(client: TestClient, seeded: dict[str, str]) -> None:
+    secret_marker = "NOT_A_VALID_DOMAIN_7f3a"
+    response = _upload(client, seeded["token"], domain=secret_marker)
+    assert response.status_code == 422
+    message = response.json()["error"]["message"]
+    assert "domain" in message, message
+    assert "allowed values" in message, message
+    # 绝不回显提交值
+    assert secret_marker not in message, message
+
+
+def test_schema_level_validation_names_fields(client: TestClient, seeded: dict[str, str]) -> None:
+    body = _payload()
+    body.pop("title")
+    missing = client.post(
+        "/v1/knowledge/documents", json=body, headers={"Authorization": f"Bearer {seeded['token']}"}
+    )
+    assert missing.status_code == 422
+    assert "title" in missing.json()["error"]["message"]
+    assert "required" in missing.json()["error"]["message"]
+
+    extra = client.post(
+        "/v1/knowledge/documents",
+        json={**_payload(), "unexpected_field": "x"},
+        headers={"Authorization": f"Bearer {seeded['token']}"},
+    )
+    assert extra.status_code == 422
+    assert "unexpected_field" in extra.json()["error"]["message"]
+    assert "not allowed" in extra.json()["error"]["message"]
+
+
+def test_invalid_base64_message_mentions_field(client: TestClient, seeded: dict[str, str]) -> None:
+    response = _upload(client, seeded["token"], content_base64="@@@@")
+    assert response.status_code == 422
+    message = response.json()["error"]["message"]
+    assert "content_base64" in message
+    assert "@@@@" not in message, "原始值不得回显"
+
+
+def test_sensitive_codes_keep_generic_message(client: TestClient, seeded: dict[str, str]) -> None:
+    """403/404 不得因为这次改动而变得可探测。"""
+    read_only = _token(seeded["tenant"], seeded["principal"], scopes=("knowledge.read",))
+    denied = _upload(client, read_only, knowledge_key="k-hint-403")
+    assert denied.status_code == 403
+    assert denied.json()["error"]["message"] == "Request cannot be fulfilled"
+
+    bogus = "not-a-uuid"
+    revoker = _token(
+        seeded["tenant"], seeded["principal"], scopes=("knowledge.revoke",)
+    )
+    missing = client.post(
+        f"/v1/knowledge/{bogus}/revoke",
+        headers={"Authorization": f"Bearer {revoker}"},
+    )
+    assert missing.status_code == 422
+    assert "UUID" in missing.json()["error"]["message"]
