@@ -206,3 +206,32 @@ def evaluate(
     if policy.allows(subject):
         return Decision.ALLOW, None
     return Decision.DENY, DenyReason.NO_MATCH
+
+# 能证明"内部身份"的数据范围白名单。**空 scope / 未知 scope 一律不算内部**。
+INTERNAL_SCOPES = frozenset({"internal_product", "internal_training"})
+
+
+def is_external_customer(allowed_scopes: frozenset[str] | set[str]) -> bool:
+    """外部客服判定（fail-closed）。
+
+    Rev2 §3.4/§4.4（2026-11-07 审计纠偏 + L1 终审意见）：外部只允许
+    `PUBLISHED_PUBLIC` 且 `audience=customer_public`；内部身份可读 `APPROVED_INTERNAL`。
+
+    L1 指出的前提（2026-11-07）：`scope` 只表示数据范围，不能天然证明内部身份。
+    因此这里**先证明内部**（必须含白名单内的内部范围），证不出来就按外部处理：
+    - 空 scope、只有未知 scope、或 scopes 读取失败 → 外部（绝不 fail-open）；
+    - 只有含 `internal_product`/`internal_training` 才获得内部可见性。
+
+    检索、目录精确查询、证据读取三处共用这一个判据，避免口径漂移。
+    """
+    return not (set(allowed_scopes) & INTERNAL_SCOPES)
+
+__all__ = [
+    "AclFormatError",
+    "INTERNAL_SCOPES",
+    "AclPolicy",
+    "Decision",
+    "Subject",
+    "evaluate",
+    "is_external_customer",
+]

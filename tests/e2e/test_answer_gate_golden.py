@@ -62,6 +62,10 @@ class Scripted:
             text: str
             model_id: str
 
+        # 外部客服的商务意图分类器：脚本模型一律回答"否"，让用例聚焦在闸门本身；
+        # 需要验证转人工的用例用关键词命中（见 test_public_content_is_visible_to_customer_scope）。
+        if "意图分类器" in prompt:
+            return Generated(text="否", model_id=self.model_id)
         return Generated(text=self.text, model_id=self.model_id)
 
 
@@ -302,11 +306,21 @@ def test_public_content_is_visible_to_customer_scope(corpus: dict[str, Any]) -> 
         )
     outcome = _ask(
         corpus,
+        "冷凝管应该怎么清洁保养？",
+        f"使用后用中性洗涤剂清洗，纯水冲洗，自然晾干。\n引用：{evidence_id}",
+        scope="customer_public",
+    )
+    assert outcome.payload["status"] == str(AnswerStatus.ANSWERED), outcome.payload
+
+    # 同一份公开证据，客户问"保修"必须转人工（Rev2 §4.5：质量承诺不由系统作答）
+    handoff = _ask(
+        corpus,
         "售后保修期是多久？",
         f"保修期为自签收之日起 12 个月内。\n引用：{evidence_id}",
         scope="customer_public",
     )
-    assert outcome.payload["status"] == str(AnswerStatus.ANSWERED), outcome.payload
+    assert handoff.payload["status"] == str(AnswerStatus.HUMAN_REVIEW_REQUIRED), handoff.payload
+    assert handoff.payload["refusal_code"] == str(RefusalCode.HUMAN_REVIEW_REQUIRED)
 
 
 def _chunk_ids(corpus: dict[str, Any], version_id: str) -> dict[str, str]:

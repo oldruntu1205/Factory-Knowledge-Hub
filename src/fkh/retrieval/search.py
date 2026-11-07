@@ -26,7 +26,7 @@ from uuid import UUID
 
 import psycopg
 
-from fkh.authz.policy import Subject
+from fkh.authz.policy import Subject, is_external_customer
 from fkh.retrieval.embedding import Embedder, EmbeddingError
 from fkh.retrieval.hybrid import HybridRetriever
 from fkh.retrieval.lexical import SCORING as LEXICAL_SCORING
@@ -159,6 +159,7 @@ class SearchService:
                 subject=context.subject,
                 max_results=max_results,
                 retrieval_mode=retrieval_mode,
+                allowed_scopes=context.allowed_scopes,
             )
         except EmbeddingError as exc:
             self._audit_best_effort_error(
@@ -196,7 +197,9 @@ class SearchService:
         subject: Subject,
         max_results: int,
         retrieval_mode: str,
+        allowed_scopes: frozenset[str],
     ) -> SearchOutcome:
+        internal = not is_external_customer(allowed_scopes)
         if retrieval_mode == HYBRID_MODE:
             if self._embedder is None:  # 理论上前面已拦，保留不变式
                 raise SearchNotConfigured("混合检索已启用，但 embedding 模型未配置")
@@ -207,12 +210,14 @@ class SearchService:
                 knowledge_scope=knowledge_scope,
                 subject=subject,
                 max_results=max_results,
+                internal=internal,
             )
         return LexicalRetriever(self._conn, tenant_id).search(
             query,
             knowledge_scope=knowledge_scope,
             subject=subject,
             max_results=max_results,
+            internal=internal,
         )
 
     def _audit_best_effort_error(

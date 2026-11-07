@@ -512,7 +512,9 @@ def test_dense_candidate_cap_follows_formula(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def search_ids(self, query: str, *, knowledge_scope: str, limit: int) -> list[Any]:
+        def search_ids(
+            self, query: str, *, knowledge_scope: str, limit: int, internal: bool = True
+        ) -> list[Any]:
             captured.append(limit)
             return []
 

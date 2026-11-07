@@ -18,7 +18,16 @@ import psycopg
 
 from fkh.authz.policy import AclPolicy, Decision, Subject, evaluate
 
+# 可见性规则与普通检索、问答、证据读取**完全一致**（Rev2 §3.2/§3.4/§4.4）：
+#   APPROVED_INTERNAL 只对 audience=internal 的内容生效；
+#   customer_public 的内容必须真的经过独立公开审批（PUBLISHED_PUBLIC）。
+# 2026-11-07 审计（基准 7e9681a）：这里原本只查 status IN (...)，
+# 导致合成 C0 目录在公开审批之前就能被客户问到单价。
 VISIBLE_STATUSES = ("APPROVED_INTERNAL", "PUBLISHED_PUBLIC")
+VISIBILITY_SQL = """(
+    (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public')
+ OR (%(internal)s AND v.status = 'APPROVED_INTERNAL')
+)"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +75,7 @@ def find_catalog_item(
     *,
     knowledge_scope: str,
     subject: Subject,
+    internal: bool = True,
 ) -> CatalogLookup:
     """按货号查当前可检索的条目。
 
@@ -82,14 +92,16 @@ def find_catalog_item(
                ON c.tenant_id = ci.tenant_id AND c.id = ci.chunk_id
              LEFT JOIN acl_policies a
                ON a.tenant_id = c.tenant_id AND a.id = c.acl_policy_id
-            WHERE ci.tenant_id = %s
-              AND ci.code = %s
-              AND v.status = ANY(%s)
-              AND v.required_scope = %s
+            WHERE ci.tenant_id = %(tenant)s
+              AND ci.code = %(code)s
+              AND {visibility}
+              AND v.required_scope = %(scope)s
               AND (v.effective_at IS NULL OR v.effective_at <= now())
               AND (v.expires_at IS NULL OR v.expires_at > now())
-            ORDER BY v.version_no DESC, ci.created_at DESC""",
-        (tenant_id, code, list(VISIBLE_STATUSES), knowledge_scope),
+            ORDER BY v.version_no DESC, ci.created_at DESC""".replace(
+            "{visibility}", VISIBILITY_SQL
+        ),
+        {"tenant": tenant_id, "code": code, "scope": knowledge_scope, "internal": internal},
     ).fetchall()
 
     visible: list[tuple[Any, ...]] = []

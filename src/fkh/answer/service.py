@@ -26,6 +26,7 @@ from psycopg.types.json import Jsonb
 from fkh.answer.consistency import RULE_VERSION as CONSISTENCY_RULE
 from fkh.answer.consistency import ClaimCheck, check_answer
 from fkh.answer.prompt import build_prompt, extract_citations
+from fkh.authz.policy import is_external_customer
 from fkh.catalog.lookup import chunk_contains_row, find_catalog_item
 from fkh.domain.catalog import count_distinct_codes, detect_catalog_intent
 from fkh.generation import GenerationError, TextGenerator
@@ -63,6 +64,70 @@ class AnswerOutcome:
     payload: dict[str, Any]
     status: AnswerStatus
     model_id: str | None
+
+
+_HANDOFF_TEXT = (
+    "这类问题涉及价格、交期、质量承诺或定制可行性，需要业务人员确认后回复，"
+    "系统不提供自动承诺。我可以先提供该产品的公开规格与使用说明，商务条款请由销售同事答复。"
+)
+
+# 商务承诺类触发词（确定性、可审计；只对"外部客服"身份生效）
+_COMMITMENT_KEYWORDS = (
+    # 价格
+    "单价", "价格", "报价", "多少钱", "价钱", "价位", "折扣", "优惠",
+    "price", "quote", "quotation", "discount", "cost",
+    # 交期 / 现货
+    "交期", "交货", "货期", "多久能发", "多久发货", "什么时候发", "现货",
+    "能到", "几号到", "lead time", "delivery", "in stock", "stock",
+    # 采购条件
+    "起订", "最小起订", "moq", "minimum order",
+    # 质量承诺
+    "质保", "保修", "保证", "承诺", "包换", "包退", "赔偿", "赔付",
+    "warranty", "guarantee", "refund", "compensation",
+    # 定制 / 加工
+    "定制", "定做", "开模", "改型", "图纸", "加工", "订做",
+    "custom", "customization", "oem", "odm", "drawing",
+)
+
+# 语义兜底：确定性词表只证明"命中必须转人工"，**不能证明未命中就可以自动回答**。
+# L1 终审（2026-11-07）要求：未命中时做语义识别，疑似/识别失败/不确定一律转人工；
+# 模型只能"加严"，永远不能解除确定性拦截。
+_COMMITMENT_CLASSIFIER_PROMPT = (
+    "你是一个意图分类器。判断下面的客户问题是否在询问以下任一项："
+    "价格或折扣、交期或现货、质量承诺或保修、定制或开模、最小起订量等采购条件。\n"
+    "只输出一个字：是 / 否。不确定时必须输出：是。\n\n"
+    "问题：{query}\n"
+)
+
+
+def _is_external_customer(context: SearchContext) -> bool:
+    """外部客服判定（唯一来源在 authz.policy，这里只是就地取用）。"""
+    return is_external_customer(context.allowed_scopes)
+
+
+def _is_commitment_request(query: str) -> bool:
+    return any(keyword in query.lower() for keyword in _COMMITMENT_KEYWORDS)
+
+
+def _external_needs_human(query: str, generator: TextGenerator | None) -> bool:
+    """外部客服的商务类问题判定（fail-closed）。
+
+    1) 确定性词表命中 → 转人工（可解释、可回归）；
+    2) 未命中 → 语义识别；只有明确"否"才放行；
+       识别失败 / 抛错 / 无模型 → 转人工（宁可多转，不可漏拦）。
+    """
+    if _is_commitment_request(query):
+        return True
+    if generator is None:
+        return True
+    try:
+        verdict = generator.generate(
+            _COMMITMENT_CLASSIFIER_PROMPT.format(query=query), max_tokens=8, temperature=0.0
+        )
+    except GenerationError:
+        return True
+    text = (getattr(verdict, "text", "") or "").strip()
+    return not text.startswith("否")
 
 
 def _unsupported_counts(check: ClaimCheck | None) -> dict[str, int | None] | None:
@@ -145,6 +210,41 @@ class AnswerService:
         trace_id = context.trace_id
         # 审计只能存摘要：先算哈希，算不出来（无密钥）就不具备审计条件
         query_hash = query_fingerprint(self._hash_key, query) if self._hash_key else None
+
+        # 外部客服（只有 customer_public 数据范围）的商务承诺类问题必须转人工（Rev2 §4.5）：
+        # 价格、交期、质量承诺、定制可行性**都不许由系统直接给答案**，也不许走
+        # 目录精确通道——那条通道会自动把单价读出来。
+        if _is_external_customer(context) and _external_needs_human(query, self._generator):
+            if query_hash is not None:
+                self._audit(
+                    context=context,
+                    knowledge_scope=knowledge_scope,
+                    status="HUMAN_REVIEW_REQUIRED",
+                    refusal_code=RefusalCode.HUMAN_REVIEW_REQUIRED,
+                    model_id=None,
+                    citations=(),
+                    trace_id=trace_id,
+                    query_hash=query_hash,
+                    route="handoff",
+                    route_reason="external_customer_commitment",
+                )
+            plan = AnswerPlan(
+                status=AnswerStatus.HUMAN_REVIEW_REQUIRED,
+                citations=(),
+                requires_human_review=True,
+                refusal_code=RefusalCode.HUMAN_REVIEW_REQUIRED,
+            )
+            return AnswerOutcome(
+                payload=to_response(
+                    plan,
+                    answer_text=_HANDOFF_TEXT,
+                    trace_id=trace_id,
+                    index_generation=0,
+                    literal_support=None,
+                ),
+                status=plan.status,
+                model_id=None,
+            )
 
         # 目录精确通道：确定性规则，不经过模型（即使 provider=none 也应可用）
         catalog_outcome, catalog_reason = self._catalog_answer(
@@ -342,6 +442,7 @@ class AnswerService:
             intent.code,
             knowledge_scope=knowledge_scope,
             subject=context.subject,
+            internal=not is_external_customer(context.allowed_scopes),
         )
 
         if lookup.ambiguous:

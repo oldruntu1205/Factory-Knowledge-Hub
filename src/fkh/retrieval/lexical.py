@@ -51,10 +51,13 @@ BM25_B = 0.75
 
 # 可见性谓词：租户、范围、状态三件套。词法与向量两路必须用同一份，
 # 否则会出现"词法查得到、向量查不到"或反过来的口径漂移。
+# Rev2 §3.4/§4.4（2026-11-07 审计纠偏）：外部客服只允许 `PUBLISHED_PUBLIC + customer_public`；
+# 内部身份可以读 `APPROVED_INTERNAL`（不论 audience）。判据统一由
+# `fkh.authz.policy.is_external_customer(allowed_scopes)` 给出，三处（检索/目录/证据）共用。
 VISIBILITY_PREDICATE = """
    AND v.required_scope = %(scope)s
-   AND ( (v.status = 'APPROVED_INTERNAL' AND v.audience = 'internal')
-      OR (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public') )
+   AND ( (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public')
+      OR (%(internal)s AND v.status = 'APPROVED_INTERNAL') )
 """
 
 _CANDIDATE_SQL = f"""
@@ -142,6 +145,7 @@ class LexicalRetriever:
         subject: Subject,
         max_results: int = 10,
         scoring: str = SCORING,
+        internal: bool = True,
     ) -> SearchOutcome:
         self._bind_tenant()
         if max_results > MAX_CANDIDATES:
@@ -162,6 +166,7 @@ class LexicalRetriever:
                 "ts_query": ts_query,
                 "tenant": self._tenant,
                 "scope": knowledge_scope,
+                "internal": internal,
                 "lexeme_tokenizer": TOKENIZER_ID,
                 "limit": limit,
             },
@@ -169,7 +174,11 @@ class LexicalRetriever:
 
         if scoring == SCORING:
             rows = self._rescore_bm25(
-                query, rows, knowledge_scope=knowledge_scope, subject=subject
+                query,
+                rows,
+                knowledge_scope=knowledge_scope,
+                subject=subject,
+                internal=internal,
             )
         elif scoring != LEGACY_SCORING:
             raise ValueError(f"未知的打分方式：{scoring}")
@@ -214,6 +223,7 @@ class LexicalRetriever:
         *,
         knowledge_scope: str,
         subject: Subject,
+        internal: bool = True,
     ) -> list[Any]:
         """按 BM25（字级）重排候选。
 
@@ -228,7 +238,10 @@ class LexicalRetriever:
             terms.update(term for term in segment_cjk(query).split() if _is_term(term))
 
         n, avg_len, df = self._corpus_stats(
-            knowledge_scope=knowledge_scope, subject=subject, terms=sorted(terms)
+            knowledge_scope=knowledge_scope,
+            subject=subject,
+            terms=sorted(terms),
+            internal=internal,
         )
         if n == 0 or avg_len <= 0:
             return rows
@@ -259,13 +272,19 @@ class LexicalRetriever:
         return result
 
     def _corpus_stats(
-        self, *, knowledge_scope: str, subject: Subject, terms: list[str]
+        self,
+        *,
+        knowledge_scope: str,
+        subject: Subject,
+        terms: list[str],
+        internal: bool = True,
     ) -> tuple[int, float, dict[str, int]]:
         rows = self._conn.execute(
             _STATS_SQL.format(visibility=VISIBILITY_PREDICATE),
             {
                 "tenant": self._tenant,
                 "scope": knowledge_scope,
+                "internal": internal,
                 "lexeme_tokenizer": TOKENIZER_ID,
                 "terms": terms,
             },

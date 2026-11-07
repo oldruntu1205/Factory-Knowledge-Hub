@@ -31,7 +31,7 @@ from fkh.retrieval.lexical import (
 
 SCORING = "hybrid-rrf-v1"
 
-_DENSE_SQL = f"""
+_DENSE_SQL = """
 SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_path,
        p.policy_json, c.index_generation,
        1 - (c.embedding <=> %(vector)s::vector) AS similarity
@@ -44,10 +44,10 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
    AND c.chunk_kind = 'child'
    AND c.embedding IS NOT NULL
    AND c.embedding_model_id = %(model)s
-   {VISIBILITY_PREDICATE}
+   {visibility}
  ORDER BY c.embedding <=> %(vector)s::vector
  LIMIT %(limit)s
-"""
+""".replace("{visibility}", VISIBILITY_PREDICATE)
 
 
 def reciprocal_rank_fusion(
@@ -82,7 +82,7 @@ class DenseRetriever:
         self._embedder = embedder
 
     def search_ids(
-        self, query: str, *, knowledge_scope: str, limit: int
+        self, query: str, *, knowledge_scope: str, limit: int, internal: bool = True
     ) -> list[UUID]:
         self._conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(self._tenant),))
         vector = self._embedder.embed_query(query)
@@ -92,6 +92,7 @@ class DenseRetriever:
                 "vector": to_pgvector(vector),
                 "tenant": self._tenant,
                 "scope": knowledge_scope,
+                "internal": internal,
                 "model": self._embedder.model_id,
                 "limit": limit,
             },
@@ -120,14 +121,19 @@ class HybridRetriever:
         knowledge_scope: str,
         subject: Subject,
         max_results: int = 10,
+        internal: bool = True,
     ) -> SearchOutcome:
         limit = min(max_results * OVERFETCH, MAX_CANDIDATES)
 
         dense_ids = DenseRetriever(self._conn, self._tenant, self._embedder).search_ids(
-            query, knowledge_scope=knowledge_scope, limit=limit
+            query, knowledge_scope=knowledge_scope, limit=limit, internal=internal
         )
         lexical = LexicalRetriever(self._conn, self._tenant).search(
-            query, knowledge_scope=knowledge_scope, subject=subject, max_results=max_results
+            query,
+            knowledge_scope=knowledge_scope,
+            subject=subject,
+            max_results=max_results,
+            internal=internal,
         )
         lexical_ids = [hit.chunk_id for hit in lexical.hits]
         lexical_by_id = {hit.chunk_id: hit for hit in lexical.hits}
