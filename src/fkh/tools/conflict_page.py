@@ -73,6 +73,10 @@ CONFLICTS_PAGE = r"""<!doctype html>
                     font:13px/1.7 "Consolas","Microsoft YaHei",monospace; margin:0; }
   .meta-line { font-size:12.5px; color:var(--muted); margin-bottom:12px; }
   .meta-line code { color:var(--text); }
+  .ev-line { white-space:pre-wrap; }
+  .ev-line mark { background:#3b2f0a; color:#ffd479; border-radius:3px; padding:0 2px; }
+  .ev-line.hit { background:#1b2430; border-left:2px solid var(--warn); padding-left:8px;
+                 margin-left:-10px; }
 </style>
 </head>
 <body>
@@ -153,7 +157,7 @@ function render() {
   list.innerHTML = state.items.map(group => {
     const rows = (group.candidates || []).map(c => `
       <div class="row">
-        <div class="spec">${esc(c.spec)}<button class="ghost" data-ev="${esc(c.chunk_id)}">原文</button></div>
+        <div class="spec">${esc(c.spec)}<button class="ghost" data-ev="${esc(c.chunk_id)}" data-price="${esc(c.raw_price)}" data-spec="${esc(c.spec)}">原文</button></div>
         <div class="price">¥ ${esc(c.raw_price)}</div>
         <div class="loc">${esc(locText(c.locator))}</div>
         <div style="text-align:right">
@@ -192,7 +196,32 @@ async function resolve(groupId, payload, okText) {
   return true;
 }
 
-async function openEvidence(chunkId) {
+function specToken(spec) {
+  // 用规格里"含数字的最长 token"当锚点：「38*400」「250mm」这类在原文行里几乎唯一
+  const tokens = String(spec || "").split(/\s+/).filter(Boolean);
+  const withDigit = tokens.filter(tk => /\d/.test(tk));
+  const pool = withDigit.length ? withDigit : tokens;
+  return pool.sort((a, b) => b.length - a.length)[0] || "";
+}
+
+function renderEvidence(text, price, spec) {
+  const anchor = specToken(spec);
+  const lines = String(text || "").split("\n");
+  let hits = 0;
+  const html = lines.map(line => {
+    const norm = line.replace(/\s+/g, " ");
+    const hitPrice = price && norm.includes(String(price));
+    const hitSpec = anchor && norm.includes(anchor);
+    if (hitPrice && hitSpec) {
+      hits += 1;
+      return '<div class="ev-line hit"><mark>' + esc(line) + '</mark></div>';
+    }
+    return '<div class="ev-line">' + esc(line) + '</div>';
+  }).join("");
+  return { html, hits, anchor };
+}
+
+async function openEvidence(chunkId, price, spec) {
   const overlay = document.getElementById("evidence");
   document.getElementById("ev-text").textContent = "加载中…";
   document.getElementById("ev-meta").textContent = "";
@@ -219,7 +248,20 @@ async function openEvidence(chunkId) {
       " · 状态 <code>" + esc(body.status) + "</code>" +
       " · 正文层级 <code>" + esc(body.text_level) + "</code>" +
       "<br>章节：" + esc(heading);
-    document.getElementById("ev-text").textContent = body.text || "（空）";
+    const { html, hits, anchor } = renderEvidence(body.text || "", price, spec);
+    const target = document.getElementById("ev-text");
+    target.innerHTML = html || "（空）";
+    if (!hits) {
+      target.insertAdjacentHTML(
+        "afterbegin",
+        '<div class="meta-line" style="color:#d29922">未能在本块原文中定位到该候选行' +
+        (anchor ? "（锚点：" + esc(anchor) + (price ? " / " + esc(price) : "") + "）" : "") +
+        "——可能是父块合并或格式差异，请人工核对。</div>"
+      );
+    } else {
+      const first = target.querySelector(".ev-line.hit");
+      if (first) first.scrollIntoView({block: "center"});
+    }
   } catch (e) {
     document.getElementById("ev-text").textContent = "请求失败：" + e;
   }
@@ -237,7 +279,7 @@ document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeEvide
 
 document.addEventListener("click", async ev => {
   const raw = ev.target.closest("[data-ev]");
-  if (raw) { openEvidence(raw.dataset.ev); return; }
+  if (raw) { openEvidence(raw.dataset.ev, raw.dataset.price, raw.dataset.spec); return; }
   const keep = ev.target.closest("[data-keep]");
   if (keep) {
     const [groupId, candidateId] = keep.dataset.keep.split("|");
@@ -254,10 +296,12 @@ document.addEventListener("click", async ev => {
   }
 });
 
-load();
-
 const presetEvidence = new URLSearchParams(location.search).get("evidence");
-if (presetEvidence) openEvidence(presetEvidence);
+load().then(() => {
+  if (!presetEvidence) return;
+  const byId = state.items.flatMap(g => g.candidates || []).find(c => c.chunk_id === presetEvidence);
+  openEvidence(presetEvidence, byId?.raw_price, byId?.spec);
+});
 </script>
 </body>
 </html>
