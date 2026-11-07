@@ -77,8 +77,12 @@ def _release(conn: psycopg.Connection[Any], *, completed: bool) -> None:
                 conn.rollback()  # 业务抛异常：整体回滚
         conn.execute("SELECT set_config('app.tenant_id', '', false)")
         conn.commit()  # 清理单独提交，不被后续 rollback 撤销
-    except Exception:  # noqa: BLE001 - 清理失败必须丢弃连接
+    except BaseException as exc:  # noqa: BLE001 - 清理失败必须丢弃连接
+        # 取消（CancelledError/KeyboardInterrupt 等 BaseException）同样要丢弃连接：
+        # 只捕 Exception 会让"清理被中断"留下带租户的连接（L1 2026-11-07 边界提醒）。
         conn.close()
+        if not isinstance(exc, Exception):
+            raise
 
 
 def get_conn(

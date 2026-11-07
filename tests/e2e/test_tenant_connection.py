@@ -101,3 +101,20 @@ def test_tenant_context_does_not_leak_between_two_tenants(
         assert _guc(conn) == second
     with pool.connection() as probe:
         assert _guc(probe) in (None, ""), "第二个租户结束后仍残留上下文"
+
+
+def test_cancel_style_baseexception_still_discards_connection(
+    pool: ConnectionPool[object], admin: psycopg.Connection[object]
+) -> None:
+    """取消类 BaseException（如 CancelledError/KeyboardInterrupt）也必须丢弃连接（L1 边界）。"""
+    tenant_id = admin.execute("SELECT id FROM tenants LIMIT 1").fetchone()[0]
+
+    with pytest.raises(KeyboardInterrupt):
+        with tenant_connection(pool, tenant_id) as conn:
+            inner_id = id(conn)
+            conn.close()  # 让清理阶段抛错，同时模拟取消
+            raise KeyboardInterrupt
+
+    with pool.connection() as probe:
+        assert id(probe) != inner_id
+        assert not probe.closed
