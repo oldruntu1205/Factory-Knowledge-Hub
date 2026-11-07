@@ -75,6 +75,7 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
    AND c.chunk_kind = 'child'
    AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
    {VISIBILITY_PREDICATE}
+   AND (%(version_filter)s::uuid[] IS NULL OR c.version_id = ANY(%(version_filter)s))
  ORDER BY score DESC, c.id
  LIMIT %(limit)s
 """
@@ -92,6 +93,7 @@ WITH visible AS (
    WHERE c.tenant_id = %(tenant)s
      AND c.chunk_kind = 'child'
      AND c.lexeme_tokenizer_id = %(lexeme_tokenizer)s
+     AND (%(version_filter)s::uuid[] IS NULL OR c.version_id = ANY(%(version_filter)s))
      {visibility}
 ),
 terms AS (SELECT unnest(%(terms)s::text[]) AS term)
@@ -146,6 +148,7 @@ class LexicalRetriever:
         max_results: int = 10,
         scoring: str = SCORING,
         internal: bool = True,
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> SearchOutcome:
         self._bind_tenant()
         if max_results > MAX_CANDIDATES:
@@ -169,6 +172,7 @@ class LexicalRetriever:
                 "internal": internal,
                 "lexeme_tokenizer": TOKENIZER_ID,
                 "limit": limit,
+                "version_filter": list(version_ids) if version_ids else None,
             },
         ).fetchall()
 
@@ -179,6 +183,7 @@ class LexicalRetriever:
                 knowledge_scope=knowledge_scope,
                 subject=subject,
                 internal=internal,
+                version_ids=version_ids,
             )
         elif scoring != LEGACY_SCORING:
             raise ValueError(f"未知的打分方式：{scoring}")
@@ -224,6 +229,7 @@ class LexicalRetriever:
         knowledge_scope: str,
         subject: Subject,
         internal: bool = True,
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> list[Any]:
         """按 BM25（字级）重排候选。
 
@@ -242,6 +248,7 @@ class LexicalRetriever:
             subject=subject,
             terms=sorted(terms),
             internal=internal,
+            version_ids=version_ids,
         )
         if n == 0 or avg_len <= 0:
             return rows
@@ -278,6 +285,7 @@ class LexicalRetriever:
         subject: Subject,
         terms: list[str],
         internal: bool = True,
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[int, float, dict[str, int]]:
         rows = self._conn.execute(
             _STATS_SQL.format(visibility=VISIBILITY_PREDICATE),
@@ -287,6 +295,7 @@ class LexicalRetriever:
                 "internal": internal,
                 "lexeme_tokenizer": TOKENIZER_ID,
                 "terms": terms,
+                "version_filter": list(version_ids) if version_ids else None,
             },
         ).fetchall()
 

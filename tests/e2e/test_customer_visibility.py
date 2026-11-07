@@ -419,3 +419,38 @@ def test_unknown_or_empty_scopes_are_not_treated_as_internal(
             body = response.json()
             assert body["status"] != "ANSWERED", body
             assert CATALOG_PRICE not in body.get("answer", ""), body
+
+
+def test_customer_spec_answer_has_no_price(
+    client: TestClient, actors: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P0-2：客户只问规格，回答不得附带单价（目录精确通道曾把两者一起读出来）。"""
+    from tests.e2e.test_customer_visibility import _Scripted as _S
+
+    monkeypatch.setattr("fkh.api.main.get_generator", lambda *a, **k: _S("否"))
+    version_id = _upload_catalog(client, actors)
+    _approve(client, version_id, actors)
+    _publish_public(client, version_id, actors)
+
+    spec = _ask(client, actors["customer_token"], f"{CATALOG_CODE} 的规格是什么？")
+    assert spec.status_code == 200, spec.text
+    body = spec.json()
+    assert body["status"] == "ANSWERED", body
+    assert "200mm" in body["answer"], body
+    assert CATALOG_PRICE not in body["answer"], f"规格问答不得带出单价：{body['answer']}"
+
+    # 询价仍转人工，且不带价格
+    price = _ask(client, actors["customer_token"], f"{CATALOG_CODE} 的单价是多少？")
+    assert price.json()["status"] == "HUMAN_REVIEW_REQUIRED"
+    assert CATALOG_PRICE not in price.json().get("answer", "")
+
+    # 内部获授权的单价查询保留
+    internal = client.post(
+        "/v1/knowledge/answer",
+        json={"query": f"{CATALOG_CODE} 的单价是多少？", "knowledge_scope": "customer_public",
+              "language": "zh-CN", "max_evidence": 5},
+        headers={"Authorization": f"Bearer {actors['internal_token']}"},
+    )
+    assert internal.status_code == 200, internal.text
+    assert internal.json()["status"] == "ANSWERED"
+    assert CATALOG_PRICE in internal.json()["answer"]

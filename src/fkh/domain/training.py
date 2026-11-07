@@ -46,6 +46,10 @@ class TrainingError(ValueError):
     """业务规则不满足。"""
 
 
+class MentorNotAssigned(LookupError):
+    """签核人没有覆盖该任务班组/岗位的授权（对外 403，不区分原因）。"""
+
+
 class CourseNotFound(LookupError):
     pass
 
@@ -505,7 +509,7 @@ class TrainingService:
             raise TrainingError(f"decision 非法：{decision}")
         self._bind()
         row = self._conn.execute(
-            """SELECT a.course_id, c.status
+            """SELECT a.course_id, c.status, a.cohort_id, c.role_id, a.learner_subject_id
                  FROM training_assignments a
                  JOIN training_courses c
                    ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
@@ -516,6 +520,28 @@ class TrainingService:
             raise CourseNotFound(str(assignment_id))
         if str(row[1]) != "PUBLISHED":
             raise TrainingError(f"课程当前不可用（{row[1]}），暂停签核")
+
+        # 学员不得给自己签核（即使同时持有 mentor scope）
+        if str(row[4]) == assessor_subject_id:
+            raise MentorNotAssigned("学员不能为自己签核")
+
+        # 可信授权：导师必须被授予该任务的**班组**，或该课程的**岗位**
+        authorised = self._conn.execute(
+            """SELECT 1 FROM training_mentor_scopes
+                WHERE tenant_id = %s AND mentor_subject_id = %s
+                  AND ( (%s::text IS NOT NULL AND cohort_id = %s)
+                     OR (%s::uuid IS NOT NULL AND role_id = %s) )""",
+            (
+                self._tenant,
+                assessor_subject_id,
+                row[2],
+                row[2],
+                row[3],
+                row[3],
+            ),
+        ).fetchone()
+        if authorised is None:
+            raise MentorNotAssigned("导师未被授权签核该班组/岗位")
 
         signoff_id = uuid.uuid4()
         self._conn.execute(
@@ -541,6 +567,32 @@ class TrainingService:
         }
 
     # ---- 正文读取（2026-11-07 L1 条件通过） --------------------------------
+    def approved_source_versions(
+        self, assignment_id: uuid.UUID, learner_subject_id: str
+    ) -> tuple[uuid.UUID, ...]:
+        """当前任务绑定的、仍处于 APPROVED_INTERNAL 的课程源版本。
+
+        培训问答只能在这些版本内召回与引用（L1 2026-11-07：问答候选与引用限定为课程源）。
+        课程不可用时由 `assert_can_ask` 先行拦截，这里只做版本集合计算。
+        """
+        self._bind()
+        rows = self._conn.execute(
+            """SELECT s.knowledge_version_id, v.status
+                 FROM training_assignments a
+                 JOIN training_courses c
+                   ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
+                 JOIN training_course_sources s
+                   ON s.tenant_id = c.tenant_id AND s.course_id = c.course_id
+                 JOIN knowledge_versions v
+                   ON v.tenant_id = s.tenant_id AND v.id = s.knowledge_version_id
+                WHERE a.tenant_id = %s AND a.assignment_id = %s
+                  AND a.learner_subject_id = %s AND c.status = 'PUBLISHED'""",
+            (self._tenant, assignment_id, learner_subject_id),
+        ).fetchall()
+        return tuple(
+            uuid.UUID(str(row[0])) for row in rows if str(row[1]) == "APPROVED_INTERNAL"
+        )
+
     def content_page(
         self,
         *,

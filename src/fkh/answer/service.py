@@ -206,6 +206,7 @@ class AnswerService:
         language: str,
         max_evidence: int,
         context: SearchContext,
+        only_version_ids: tuple[UUID, ...] | None = None,
     ) -> AnswerOutcome:
         trace_id = context.trace_id
         # 审计只能存摘要：先算哈希，算不出来（无密钥）就不具备审计条件
@@ -284,6 +285,7 @@ class AnswerService:
             max_results=max_evidence,
             context=context,
             retrieval_mode=self._retrieval_mode,
+            version_ids=only_version_ids,
         )
         assembly = assemble_context(
             self._conn,
@@ -534,10 +536,43 @@ class AnswerService:
             requires_human_review=False,
             refusal_code=None,
         )
+        external = is_external_customer(context.allowed_scopes)
+        if intent.kind == "price" and external:
+            # 防御纵深：外部客户的询价本应在进入通道前转人工（关键词 + 语义兜底），
+            # 万一漏到这里，也绝不把单价读出来。
+            plan = AnswerPlan(
+                status=AnswerStatus.HUMAN_REVIEW_REQUIRED,
+                citations=(),
+                requires_human_review=True,
+                refusal_code=RefusalCode.HUMAN_REVIEW_REQUIRED,
+            )
+            payload = to_response(
+                plan,
+                answer_text=_HANDOFF_TEXT,
+                trace_id=context.trace_id,
+                index_generation=0,
+            )
+            self._persist(
+                context,
+                knowledge_scope,
+                plan,
+                model_id=CATALOG_MODEL_ID,
+                trace_id=context.trace_id,
+                query_hash=query_hash,
+                route="catalog_exact",
+                route_reason="not_found",
+            )
+            return AnswerOutcome(
+                payload=payload, status=plan.status, model_id=CATALOG_MODEL_ID
+            ), None
+
         if intent.kind == "price":
             answer_text = (
                 f"{match.code} 的单价为 {match.raw_price}（{match.currency}），规格：{match.spec}。"
             )
+        elif external:
+            # 外部客户只拿"允许自动作答的规格事实"；价格/交期/承诺另行转人工
+            answer_text = f"{match.code} 的规格为 {match.spec}。"
         else:
             answer_text = (
                 f"{match.code} 的规格为 {match.spec}；单价 {match.raw_price}（{match.currency}）。"

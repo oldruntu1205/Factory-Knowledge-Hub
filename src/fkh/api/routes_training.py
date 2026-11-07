@@ -29,7 +29,12 @@ from fkh.api.models import (
 )
 from fkh.api.security import PrincipalDep
 from fkh.config import Settings, get_settings
-from fkh.domain.training import CourseNotFound, TrainingError, TrainingService
+from fkh.domain.training import (
+    CourseNotFound,
+    MentorNotAssigned,
+    TrainingError,
+    TrainingService,
+)
 
 router = APIRouter(tags=["training"])
 
@@ -44,7 +49,7 @@ def _uuid(raw: str, field: str) -> UUID:
 
 
 def _translate(exc: Exception) -> ApiError:
-    if isinstance(exc, CourseNotFound):
+    if isinstance(exc, (CourseNotFound, MentorNotAssigned)):
         # 与"无权限"不可区分，避免用错误码探测课程/任务是否存在
         return ApiError(ErrorCode.ACCESS_DENIED, detail=str(exc))
     if isinstance(exc, TrainingError):
@@ -241,7 +246,7 @@ def practical_signoff(
             decision=payload.decision,
             evidence_uri=payload.evidence_uri,
         )
-    except (CourseNotFound, TrainingError) as exc:
+    except (CourseNotFound, MentorNotAssigned, TrainingError) as exc:
         raise _translate(exc) from exc
 
 
@@ -277,6 +282,16 @@ def training_ask(
     except (CourseNotFound, TrainingError) as exc:
         raise _translate(exc) from exc
 
+    # 培训问答只允许在当前课程源版本内召回与引用
+    try:
+        allowed_versions = service.approved_source_versions(
+            _uuid(payload.assignment_id, "assignment_id"), context.subject
+        )
+    except (CourseNotFound, TrainingError) as exc:
+        raise _translate(exc) from exc
+    if not allowed_versions:
+        raise ApiError(ErrorCode.VERSION_CONFLICT, detail="课程没有可用（已批准）的知识源")
+
     mode, embedder = resolve_retrieval(settings)
     return run_answer(
         conn,
@@ -289,4 +304,5 @@ def training_ask(
         trace_id=str(getattr(request.state, "trace_id", "-")),
         embedder=embedder,
         retrieval_mode=mode,
+        only_version_ids=allowed_versions,
     )

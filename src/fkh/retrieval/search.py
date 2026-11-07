@@ -110,6 +110,7 @@ class SearchService:
         knowledge_scope: str,
         max_results: int,
         context: SearchContext,
+        version_ids: tuple[UUID, ...] | None = None,
         retrieval_mode: str = LEXICAL_MODE,
     ) -> SearchResult:
         if not self._hash_key:
@@ -160,6 +161,7 @@ class SearchService:
                 max_results=max_results,
                 retrieval_mode=retrieval_mode,
                 allowed_scopes=context.allowed_scopes,
+                version_ids=version_ids,
             )
         except EmbeddingError as exc:
             self._audit_best_effort_error(
@@ -198,6 +200,7 @@ class SearchService:
         max_results: int,
         retrieval_mode: str,
         allowed_scopes: frozenset[str],
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> SearchOutcome:
         internal = not is_external_customer(allowed_scopes)
         if retrieval_mode == HYBRID_MODE:
@@ -211,6 +214,7 @@ class SearchService:
                 subject=subject,
                 max_results=max_results,
                 internal=internal,
+                version_ids=version_ids,
             )
         return LexicalRetriever(self._conn, tenant_id).search(
             query,
@@ -218,6 +222,7 @@ class SearchService:
             subject=subject,
             max_results=max_results,
             internal=internal,
+            version_ids=version_ids,
         )
 
     def _audit_best_effort_error(

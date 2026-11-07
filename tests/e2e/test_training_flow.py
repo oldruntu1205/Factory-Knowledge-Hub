@@ -98,7 +98,7 @@ def client(pg_url: str) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def world(admin: psycopg.Connection[Any]) -> dict[str, Any]:
+def world(admin: psycopg.Connection[Any], pg_url: str) -> dict[str, Any]:
     tenant = create_tenant(admin, f"培训 {uuid.uuid4().hex[:6]}")
     admin_p = create_principal(admin, tenant, f"admin-{uuid.uuid4().hex[:6]}@example.test")
     learner_a = create_principal(admin, tenant, f"la-{uuid.uuid4().hex[:6]}@example.test")
@@ -108,6 +108,7 @@ def world(admin: psycopg.Connection[Any]) -> dict[str, Any]:
 
     world: dict[str, Any] = {
         "tenant": tenant,
+        "dsn": pg_url,
         "admin_token": _token(
             tenant,
             admin_p,
@@ -120,6 +121,8 @@ def world(admin: psycopg.Connection[Any]) -> dict[str, Any]:
         "learner_a": f"learner-a-{uuid.uuid4().hex[:6]}",
         "learner_b": f"learner-b-{uuid.uuid4().hex[:6]}",
         "mentor_subject": f"mentor-{uuid.uuid4().hex[:6]}",
+        "cohort": f"cohort-{uuid.uuid4().hex[:6]}",
+        "other_cohort": f"cohort-{uuid.uuid4().hex[:6]}",
     }
     world["token_a"] = _token(
         tenant, learner_a, scopes=("learner",), allowed=("internal_training",),
@@ -134,6 +137,20 @@ def world(admin: psycopg.Connection[Any]) -> dict[str, Any]:
         subject=world["mentor_subject"],
     )
     return world
+
+
+def _grant_mentor(world: dict[str, Any], mentor_subject: str, *, cohort: str) -> None:
+    import psycopg as _pg
+
+    with _pg.connect(world["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (world["tenant"],))
+        conn.execute(
+            """INSERT INTO training_mentor_scopes
+                 (tenant_id, mentor_subject_id, cohort_id)
+               VALUES (%s, %s, %s)
+               ON CONFLICT DO NOTHING""",
+            (world["tenant"], mentor_subject, cohort),
+        )
 
 
 def _h(token: str) -> dict[str, str]:
@@ -201,12 +218,14 @@ def _setup_course(client: TestClient, world: dict[str, Any]) -> dict[str, str]:
 
     assignment_a = client.post(
         "/v1/training/assignments",
-        json={"course_id": course_id, "learner_subject_id": world["learner_a"]},
+        json={"course_id": course_id, "learner_subject_id": world["learner_a"],
+              "cohort_id": world["cohort"]},
         headers=_h(world["admin_token"]),
     )
     assignment_b = client.post(
         "/v1/training/assignments",
-        json={"course_id": course_id, "learner_subject_id": world["learner_b"]},
+        json={"course_id": course_id, "learner_subject_id": world["learner_b"],
+              "cohort_id": world["other_cohort"]},
         headers=_h(world["admin_token"]),
     )
     assert assignment_a.status_code == 200 and assignment_b.status_code == 200
@@ -307,6 +326,38 @@ def test_quiz_submit_and_mentor_signoff(
         headers=_h(world["token_a"]),
     )
     assert denied.status_code == 403, denied.text
+
+    # 未授权时先拒
+    unassigned = client.post(
+        "/v1/training/practical-signoffs",
+        json={"assignment_id": ctx["assignment_a"], "decision": "PASS"},
+        headers=_h(world["mentor_token"]),
+    )
+    assert unassigned.status_code == 403, unassigned.text
+
+    # 授权导师到 cohort A（管理员连接写入台账）
+    _grant_mentor(world, world["mentor_subject"], cohort=world["cohort"])
+
+    # 已授权但任务在别的班组：仍拒（同租户越权）
+    cross = client.post(
+        "/v1/training/practical-signoffs",
+        json={"assignment_id": ctx["assignment_b"], "decision": "PASS"},
+        headers=_h(world["mentor_token"]),
+    )
+    assert cross.status_code == 403, cross.text
+
+    # 学员自签：即使同时持 learner + mentor，也不能签自己
+    self_token = _token(
+        world["tenant"], uuid.uuid4().hex, scopes=("learner", "mentor"),
+        allowed=("internal_training",), subject=world["learner_a"],
+    )
+    _grant_mentor(world, world["learner_a"], cohort=world["cohort"])
+    self_sign = client.post(
+        "/v1/training/practical-signoffs",
+        json={"assignment_id": ctx["assignment_a"], "decision": "PASS"},
+        headers=_h(self_token),
+    )
+    assert self_sign.status_code == 403, self_sign.text
 
     signed = client.post(
         "/v1/training/practical-signoffs",
@@ -498,3 +549,73 @@ def test_content_c3_is_not_released_by_default(
     assert assignment.status_code == 200, assignment.text
     response = _content(client, world["token_a"], assignment.json()["assignment_id"])
     assert response.status_code == 409, response.text
+
+
+def test_ask_cannot_reach_another_course_content(
+    client: TestClient, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同租户两门课：学员只能从**本任务课程源**召回，问不出另一门课的内容。"""
+    monkeypatch.setattr(
+        "fkh.api.answer_exec.get_generator",
+        lambda *a, **k: _Scripted("课程 B 的答案是 999 秒。"),
+    )
+    ctx_a = _setup_course(client, world)
+
+    # 课程 B：另一份培训材料 + 另一门课，分配给另一名学员
+    other_doc = (
+        "包装与入库培训\n\n"
+        "包装：每支冷凝管单独套气泡袋，外箱标注货号与批次。\n\n"
+        "入库：按货号分区存放，先进先出，湿度保持在 45% 以下。\n"
+    )
+    body = {
+        "filename": "packing.md",
+        "title": "包装与入库培训",
+        "domain": "training",
+        "owner_department": "hr",
+        "classification": 1,
+        "audience": "internal",
+        "required_scope": "internal_training",
+        "acl_allow_roles": ["staff"],
+        "knowledge_key": f"pack-{uuid.uuid4().hex[:6]}",
+        "content_base64": base64.b64encode(other_doc.encode()).decode(),
+    }
+    uploaded = client.post("/v1/knowledge/documents", json=body, headers=_h(world["admin_token"]))
+    assert uploaded.status_code == 201, uploaded.text
+    other_version = uploaded.json()["version_id"]
+    client.post(f"/v1/knowledge/{other_version}/review", json={"decision": "PASS"},
+                headers=_h(world["admin_token"]))
+    client.post(f"/v1/knowledge/{other_version}/publish", json={"audience": "internal"},
+                headers=_h(world["admin_token"]))
+    course_b = client.post(
+        "/v1/training/courses",
+        json={"role_code": f"packer-{uuid.uuid4().hex[:4]}", "role_name": "包装工",
+              "title": "包装与入库", "knowledge_version_ids": [other_version]},
+        headers=_h(world["admin_token"]),
+    )
+    assert course_b.status_code == 200, course_b.text
+    course_b_id = course_b.json()["course_id"]
+    client.post(
+        f"/v1/training/courses/{course_b_id}/questions",
+        json={"question_type": "SHORT_ANSWER", "prompt": "湿度要求？", "answer_key": {"correct": "45%"}},
+        headers=_h(world["admin_token"]),
+    )
+    client.post(f"/v1/training/courses/{course_b_id}/publish", headers=_h(world["admin_token"]))
+    client.post(
+        "/v1/training/assignments",
+        json={"course_id": course_b_id, "learner_subject_id": world["learner_b"]},
+        headers=_h(world["admin_token"]),
+    )
+
+    # 学员 A 在课程 A 的任务里问课程 B 的问题：不得引用 B 的版本
+    response = client.post(
+        "/v1/training/ask",
+        json={"assignment_id": ctx_a["assignment_a"], "question": "包装入库的湿度要求是多少？",
+              "language": "zh-CN"},
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    cited = {c["version_id"] for c in body.get("citations", [])}
+    assert other_version not in cited, "不得引用不属于本任务的课程源"
+    if body["status"] == "ANSWERED":
+        assert "45%" not in body["answer"], body

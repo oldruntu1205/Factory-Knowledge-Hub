@@ -56,6 +56,7 @@ def run_answer(
     trace_id: str,
     embedder: Any = None,
     retrieval_mode: str | None = None,
+    only_version_ids: tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     """执行一次问答，返回契约响应体（dict）。
 
@@ -96,6 +97,7 @@ def run_answer(
                 allowed_scopes=context.allowed_scopes,
                 trace_id=trace_id,
             ),
+            only_version_ids=only_version_ids,
         )
     except SearchScopeNotAuthorized as exc:
         raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"knowledge_scope 未授权: {exc}") from exc

@@ -45,6 +45,7 @@ SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_pat
    AND c.embedding IS NOT NULL
    AND c.embedding_model_id = %(model)s
    {visibility}
+   AND (%(version_filter)s::uuid[] IS NULL OR c.version_id = ANY(%(version_filter)s))
  ORDER BY c.embedding <=> %(vector)s::vector
  LIMIT %(limit)s
 """.replace("{visibility}", VISIBILITY_PREDICATE)
@@ -82,7 +83,13 @@ class DenseRetriever:
         self._embedder = embedder
 
     def search_ids(
-        self, query: str, *, knowledge_scope: str, limit: int, internal: bool = True
+        self,
+        query: str,
+        *,
+        knowledge_scope: str,
+        limit: int,
+        internal: bool = True,
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> list[UUID]:
         self._conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(self._tenant),))
         vector = self._embedder.embed_query(query)
@@ -93,6 +100,7 @@ class DenseRetriever:
                 "tenant": self._tenant,
                 "scope": knowledge_scope,
                 "internal": internal,
+                "version_filter": list(version_ids) if version_ids else None,
                 "model": self._embedder.model_id,
                 "limit": limit,
             },
@@ -122,11 +130,16 @@ class HybridRetriever:
         subject: Subject,
         max_results: int = 10,
         internal: bool = True,
+        version_ids: tuple[UUID, ...] | None = None,
     ) -> SearchOutcome:
         limit = min(max_results * OVERFETCH, MAX_CANDIDATES)
 
         dense_ids = DenseRetriever(self._conn, self._tenant, self._embedder).search_ids(
-            query, knowledge_scope=knowledge_scope, limit=limit, internal=internal
+            query,
+            knowledge_scope=knowledge_scope,
+            limit=limit,
+            internal=internal,
+            version_ids=version_ids,
         )
         lexical = LexicalRetriever(self._conn, self._tenant).search(
             query,
@@ -134,6 +147,7 @@ class HybridRetriever:
             subject=subject,
             max_results=max_results,
             internal=internal,
+            version_ids=version_ids,
         )
         lexical_ids = [hit.chunk_id for hit in lexical.hits]
         lexical_by_id = {hit.chunk_id: hit for hit in lexical.hits}
