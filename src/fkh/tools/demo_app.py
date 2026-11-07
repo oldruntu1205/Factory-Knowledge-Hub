@@ -31,6 +31,7 @@ import psycopg
 
 from fkh.tools.conflict_page import CONFLICTS_PAGE
 from fkh.tools.demo_page import PAGE
+from fkh.tools.evidence_client import EVIDENCE_JS
 
 DEMO_TENANT_NAME = "三爱思演示"
 
@@ -256,6 +257,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         if path in ("/conflicts", "/conflicts/"):
             self._send(200, CONFLICTS_PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if path == "/assets/evidence.js":
+            self._send(200, EVIDENCE_JS.encode(), "application/javascript; charset=utf-8")
             return
         if path == "/api/status":
             body = {

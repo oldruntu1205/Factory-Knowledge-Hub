@@ -52,6 +52,9 @@ PAGE = r"""<!doctype html>
   .cite { font-size:13px; border-left:2px solid var(--accent); padding:4px 0 4px 10px;
           margin-top:8px; color:var(--muted); }
   .cite code { color:var(--text); font-size:12px; }
+  .cite-open { margin-right:8px; padding:2px 8px; font-size:12px; border-radius:6px;
+               border:1px solid var(--line); background:transparent; color:var(--accent); cursor:pointer; }
+  .cite-open:hover { border-color:var(--accent); }
   details { margin-top:10px; }
   summary { cursor:pointer; font-size:12.5px; color:var(--muted); }
   pre { background:#0b1016; border:1px solid var(--line); border-radius:8px; padding:12px;
@@ -156,7 +159,9 @@ function render(q, body, status) {
   if (cites.length) {
     html += '<details open><summary>引用 ' + cites.length + ' 条（系统侧）</summary>';
     cites.forEach((c, i) => {
-      html += '<div class="cite">[' + (i + 1) + '] version <code>' + esc(c.version_id).slice(0, 8) +
+      html += '<div class="cite">[' + (i + 1) + '] ' +
+              '<button class="cite-open" data-ev="' + esc(c.evidence_id) + '">查看原文</button>' +
+              ' version <code>' + esc(String(c.version_id)).slice(0, 8) +
               '</code> · locator <code>' + esc(JSON.stringify(c.locator)) + '</code></div>';
     });
     html += '</details>';
@@ -167,6 +172,11 @@ function render(q, body, status) {
   document.getElementById("out").innerHTML = html;
 }
 
+document.addEventListener("click", ev => {
+  const btn = ev.target.closest("[data-ev]");
+  if (btn) window.fkhEvidence.open(btn.dataset.ev);
+});
+
 document.getElementById("go").onclick = ask;
 document.getElementById("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
 loadStatus();
@@ -175,9 +185,16 @@ loadStatus();
 const preset = new URLSearchParams(location.search).get("q");
 if (preset) {
   document.getElementById("q").value = preset;
-  ask();
+  ask().then(() => {
+    // 演示/截图：?openfirst=1 自动打开第一条引用
+    if (new URLSearchParams(location.search).get("openfirst")) {
+      const btn = document.querySelector("[data-ev]");
+      if (btn) window.fkhEvidence.open(btn.dataset.ev);
+    }
+  });
 }
 </script>
+<script src="/assets/evidence.js"></script>
 </body>
 </html>
 """
