@@ -45,3 +45,4 @@ fkh-bench-pgdata/
 .bench-pgdata/
 .verify-*-pgdata/
 .demo-pgdata/
+.tmp-pgdata/

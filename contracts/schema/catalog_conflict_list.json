@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/catalog_conflict_list.json",
+  "title": "CatalogConflictList",
+  "description": "目录冲突待办列表（2026-11-07 L1 裁决）：先按租户/版本可操作状态/required_scope/ACL 过滤，再计数与分页；响应不含原文整行。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["total", "limit", "offset", "items"],
+  "properties": {
+    "total": { "type": "integer", "minimum": 0, "description": "过滤后的可见组数（不是库内总数）" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "offset": { "type": "integer", "minimum": 0 },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/group" } }
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "chunk_id", "spec", "raw_price", "locator"],
+      "properties": {
+        "candidate_id": { "type": "string" },
+        "chunk_id": { "type": "string" },
+        "spec": { "type": "string" },
+        "raw_price": { "type": "string" },
+        "locator": { "type": "object" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_id",
+        "version_id",
+        "code",
+        "status",
+        "note",
+        "resolved_by",
+        "resolved_at",
+        "selected_candidate_id",
+        "candidates"
+      ],
+      "properties": {
+        "group_id": { "type": "string" },
+        "version_id": { "type": "string" },
+        "code": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "KEEP", "DROP_ALL"] },
+        "note": { "type": ["string", "null"], "maxLength": 500 },
+        "resolved_by": { "type": ["string", "null"] },
+        "resolved_at": { "type": ["string", "null"] },
+        "selected_candidate_id": {
+          "type": ["string", "null"],
+          "description": "KEEP 时为所选候选；DROP_ALL 与 OPEN 时为 null——只有 KEEP 状态无法说明保留了谁"
+        },
+        "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" } }
+      }
+    }
+  }
+}

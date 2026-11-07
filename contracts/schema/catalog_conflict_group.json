@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/catalog_conflict_group.json",
+  "title": "CatalogConflictGroup",
+  "description": "单组冲突待办（决议响应）。不含原文整行；KEEP 必须能恢复所选候选。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "group_id",
+    "version_id",
+    "code",
+    "status",
+    "note",
+    "resolved_by",
+    "selected_candidate_id",
+    "candidates"
+  ],
+  "properties": {
+    "group_id": { "type": "string" },
+    "version_id": { "type": "string" },
+    "code": { "type": "string" },
+    "status": { "type": "string", "enum": ["OPEN", "KEEP", "DROP_ALL"] },
+    "note": { "type": ["string", "null"], "maxLength": 500 },
+    "resolved_by": { "type": ["string", "null"] },
+    "selected_candidate_id": { "type": ["string", "null"] },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "chunk_id", "spec", "raw_price", "locator"],
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "chunk_id": { "type": "string" },
+          "spec": { "type": "string" },
+          "raw_price": { "type": "string" },
+          "locator": { "type": "object" }
+        }
+      }
+    }
+  }
+}

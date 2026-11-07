@@ -595,12 +595,103 @@ paths:
         "200": { description: 进度详情 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/catalog/conflicts:
+    get:
+      tags: [catalog]
+      summary: 目录冲突待办列表
+      description: >-
+        需要 `catalog.read`。只返回调用者可见的组：版本须处于可操作状态（RAW/DRAFT/REVIEWED/
+        APPROVED_INTERNAL/PUBLISHED_PUBLIC）、`required_scope` 在令牌授权范围内、且 ACL 允许；
+        **过滤发生在计数与分页之前**，`total` 是过滤后的可见数量。
+        不存在、跨租户、scope 不符、ACL 拒绝在决议接口一律 404；列表只做剔除。
+        响应不含原文整行（只给 spec / raw_price / locator）。
+        排序为 `code ASC, group_id ASC`（code 不唯一，必须补唯一键）。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [OPEN, KEEP, DROP_ALL], default: OPEN}
+        - name: code
+          in: query
+          schema: {type: string}
+          description: 货号精确匹配
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: 过滤后的待办组
+          content:
+            application/json:
+              schema:
+                $ref: "../schema/catalog_conflict_list.json"
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
+  /v1/catalog/conflicts/{group_id}/resolve:
+    post:
+      tags: [catalog]
+      summary: 对目录冲突待办做决议（KEEP / DROP_ALL）
+      description: >-
+        需要 `catalog.read` + `catalog.resolve`。操作者取自令牌，服务端复核「该租户 / 活跃 / user 主体」，
+        请求体没有 actor 字段。决议与回填在同一事务：锁组 → 校验 OPEN → 校验候选归属 →
+        回填条目 → 落决议；**一次性，不支持原地改判**（错判走新版本）。
+        不存在 / 跨租户 / scope 不符 / ACL 拒绝 → 404，错误体不透露原因；
+        缺 scope、非 user 主体、已停用 → 403；已决议或版本已撤销/弃用/被替代 → 409（第二次不更新任何字段）；
+        KEEP 未给候选、候选不属于该组、DROP_ALL 携带 candidate_id（含显式 null）→ 422。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action: {type: string, enum: [KEEP, DROP_ALL]}
+                candidate_id: {type: string, description: KEEP 必填；DROP_ALL 不得出现}
+                note: {type: [string, "null"], maxLength: 500}
+      responses:
+        "200":
+          description: 决议后的组
+          content:
+            application/json:
+              schema:
+                $ref: "../schema/catalog_conflict_group.json"
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404":
+          description: 不存在、跨租户、scope 不符或 ACL 拒绝（不可区分）
+          content:
+            application/json:
+              schema: {$ref: "../schema/error.json"}
+        "409":
+          description: 已决议，或版本已撤销/弃用/被替代
+          content:
+            application/json:
+              schema: {$ref: "../schema/error.json"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
 components:
   schemas:
     EvidenceResponse:
       $ref: "../schema/evidence_response.json"
     SearchResponse:
       $ref: "../schema/search_response.json"
+    CatalogConflictList:
+      $ref: "../schema/catalog_conflict_list.json"
+    CatalogConflictGroup:
+      $ref: "../schema/catalog_conflict_group.json"
   securitySchemes:
     bearerAuth:
       type: http

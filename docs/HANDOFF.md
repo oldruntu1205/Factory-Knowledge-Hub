@@ -25,6 +25,7 @@
 | D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
+| I · 冲突决策接口 | `GET /v1/catalog/conflicts` + `POST .../resolve`；scope `catalog.read`/`catalog.resolve`；资源级拒绝统一 404 | 完成（`docs/SPEC/catalog-conflict-api.md`） | 2026-11-07 |
 | H · 词法排序 | 字级 OR 召回 + BM25 重排（`lexical-v3`）：冻结用例 recall 0.48→0.62，+8/-1 | 完成（`_evidence/lexical_v3_benchmark_20261106.md`） | 2026-11-06 |
 | G · 目录精确通道 | 货号→规格/单价：入库抽取 + 确定性查询 + 问答路由（不经过模型） | 完成（`docs/SPEC/catalog-exact.md`；客户目录实测 recall 0/30 → 精确查询） | 2026-11-06 |
 | F · 问答 | `POST /v1/knowledge/answer`：检索 → 本地推理 → 引用核验 → 状态判定 → 审计 | 完成（**本地推理 only**，`FKH_LLM_PROVIDER=none` 默认 503；ADR-04 未签期唯一允许形态；`docs/SPEC/answer-generation.md`） | 2026-11-06 |

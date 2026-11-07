@@ -20,6 +20,7 @@ from fkh.answer import AnswerNotConfigured, AnswerService
 from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, install_error_handlers
 from fkh.api.models import AnswerRequest, TrainingAskRequest
+from fkh.api.routes_catalog_conflicts import router as catalog_conflicts_router
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_evidence import router as evidence_router
 from fkh.api.routes_review import router as review_router
@@ -250,6 +251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(status_code=200, content={"status": "ok", "checks": {"database": "ok"}})
 
     _register_contract_routes(app)
+    app.include_router(catalog_conflicts_router)
     app.include_router(review_router)
     app.include_router(context_router)
     app.include_router(training_router)

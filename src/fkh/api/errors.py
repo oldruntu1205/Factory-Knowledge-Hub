@@ -19,6 +19,7 @@ class ErrorCode(StrEnum):
     UNAUTHENTICATED = "UNAUTHENTICATED"
     ACCESS_DENIED = "ACCESS_DENIED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    NOT_FOUND = "NOT_FOUND"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     VERSION_CONFLICT = "VERSION_CONFLICT"
     RATE_LIMITED = "RATE_LIMITED"
@@ -31,6 +32,7 @@ _ERROR_TABLE: dict[ErrorCode, tuple[int, str]] = {
     ErrorCode.UNAUTHENTICATED: (401, "Authentication required"),
     ErrorCode.ACCESS_DENIED: (403, "Request cannot be fulfilled"),
     ErrorCode.VALIDATION_ERROR: (422, "Request payload is invalid"),
+    ErrorCode.NOT_FOUND: (404, "Resource not found"),
     ErrorCode.NOT_IMPLEMENTED: (501, "Endpoint is not implemented in this phase"),
     ErrorCode.VERSION_CONFLICT: (409, "Resource version conflict"),
     ErrorCode.RATE_LIMITED: (429, "Too many requests"),
