@@ -202,3 +202,16 @@ idf(t) = ln((N - df + 0.5)/(df + 0.5) + 1)，k1 = 1.2，b = 0.75（固定）
 
 **终审：PASS**（`_evidence/l1_reply_lexical_final_20261106.md`）——统计总体一致性、H05 退化披露、
 六项裁决落实均已确认；窗口截断、大租户统计成本、融合基准列为后续项。
+
+## 外贸客服端到端验收（2026-11-07）
+
+`tests/e2e/test_trade_service_e2e.py`（6 条，真实 PG + 四个身份 + HTTP）：
+
+| 场景 | 断言 |
+|---|---|
+| 公开事实 | 客户问规格 -> ANSWERED，引用版本 = 已公开版本；内部成本不出现在答案里 |
+| 商务承诺 | 单价/多少钱/交期/保证/定制/MOQ/英文 price+lead time -> 全部 HUMAN_REVIEW_REQUIRED，答案不含价格 |
+| 撤销 | 撤销后问答不可答、检索为空、旧引用直读 403 |
+| 审计 | rag_queries.principal_id = 客户主体、scope=customer_public、只存哈希（明文 0 命中） |
+| 副作用 | 问答前后 outbox_events 计数不变（ADR-07 未签，不对外发送） |
+| 跨域隔离 | 客户读文档管理面 403、用 internal_product 范围 403、读培训正文 403 |
