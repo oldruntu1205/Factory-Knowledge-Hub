@@ -56,6 +56,23 @@ CONFLICTS_PAGE = r"""<!doctype html>
   .toast.show { opacity:1; }
   .toast.err { border-color:var(--bad); color:var(--bad); }
   .hint { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  button.ghost { padding:2px 8px; font-size:12px; color:var(--muted); margin-left:8px; }
+  button.ghost:hover { color:var(--accent); }
+  .overlay { position:fixed; inset:0; background:rgba(4,8,12,.72); display:none;
+             align-items:center; justify-content:center; padding:24px; z-index:50; }
+  .overlay.open { display:flex; }
+  .modal { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+           width:min(860px, 100%); max-height:86vh; display:flex; flex-direction:column; }
+  .modal-head { display:flex; align-items:center; gap:12px; padding:14px 18px;
+                border-bottom:1px solid var(--line); }
+  .modal-head h2 { font-size:15px; margin:0; font-weight:600; }
+  .modal-head .spacer { flex:1; }
+  .modal-body { padding:16px 18px; overflow:auto; }
+  .modal-body pre { background:#0b1016; border:1px solid var(--line); border-radius:10px;
+                    padding:14px; white-space:pre-wrap; word-break:break-word;
+                    font:13px/1.7 "Consolas","Microsoft YaHei",monospace; margin:0; }
+  .meta-line { font-size:12.5px; color:var(--muted); margin-bottom:12px; }
+  .meta-line code { color:var(--text); }
 </style>
 </head>
 <body>
@@ -78,6 +95,19 @@ CONFLICTS_PAGE = r"""<!doctype html>
   <div id="empty" class="empty" style="display:none">没有待办。所有冲突都已决议。</div>
   <div class="hint">决议一次性生效、不可原地改判；错判请走新版本。KEEP 会用所选候选的行回填目录条目。</div>
 </main>
+<div id="evidence" class="overlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="ev-title">证据原文</h2>
+      <span class="spacer"></span>
+      <button id="ev-close">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="meta-line" id="ev-meta"></div>
+      <pre id="ev-text">加载中…</pre>
+    </div>
+  </div>
+</div>
 <div id="toast" class="toast"></div>
 
 <script>
@@ -123,7 +153,7 @@ function render() {
   list.innerHTML = state.items.map(group => {
     const rows = (group.candidates || []).map(c => `
       <div class="row">
-        <div class="spec">${esc(c.spec)}</div>
+        <div class="spec">${esc(c.spec)}<button class="ghost" data-ev="${esc(c.chunk_id)}">原文</button></div>
         <div class="price">¥ ${esc(c.raw_price)}</div>
         <div class="loc">${esc(locText(c.locator))}</div>
         <div style="text-align:right">
@@ -162,7 +192,52 @@ async function resolve(groupId, payload, okText) {
   return true;
 }
 
+async function openEvidence(chunkId) {
+  const overlay = document.getElementById("evidence");
+  document.getElementById("ev-text").textContent = "加载中…";
+  document.getElementById("ev-meta").textContent = "";
+  document.getElementById("ev-title").textContent = "证据原文";
+  overlay.classList.add("open");
+  try {
+    const res = await fetch("/api/evidence/" + encodeURIComponent(chunkId));
+    const body = await res.json();
+    if (!res.ok) {
+      document.getElementById("ev-text").textContent =
+        "取不到原文：" + (body.error?.code || res.status);
+      return;
+    }
+    const loc = body.locator || {};
+    const heading = (body.heading_path || []).join(" / ") || "—";
+    // 目录块常把页码放在 heading（如「第 5 页」），locator 里可能只有块序号
+    const pageFromHeading = (heading.match(/第\s*(\d+)\s*页/) || [])[1];
+    const where = loc.page_start ? "第 " + loc.page_start + " 页"
+                : (pageFromHeading ? "第 " + pageFromHeading + " 页"
+                : (loc.block_index !== undefined ? "第 " + (Number(loc.block_index) + 1) + " 块" : "—"));
+    document.getElementById("ev-title").textContent = "证据原文 · " + where;
+    document.getElementById("ev-meta").innerHTML =
+      "版本 <code>" + esc(String(body.version_id).slice(0, 8)) + "</code>" +
+      " · 状态 <code>" + esc(body.status) + "</code>" +
+      " · 正文层级 <code>" + esc(body.text_level) + "</code>" +
+      "<br>章节：" + esc(heading);
+    document.getElementById("ev-text").textContent = body.text || "（空）";
+  } catch (e) {
+    document.getElementById("ev-text").textContent = "请求失败：" + e;
+  }
+}
+
+function closeEvidence() {
+  document.getElementById("evidence").classList.remove("open");
+}
+
+document.getElementById("ev-close").onclick = closeEvidence;
+document.getElementById("evidence").addEventListener("click", ev => {
+  if (ev.target.id === "evidence") closeEvidence();
+});
+document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeEvidence(); });
+
 document.addEventListener("click", async ev => {
+  const raw = ev.target.closest("[data-ev]");
+  if (raw) { openEvidence(raw.dataset.ev); return; }
   const keep = ev.target.closest("[data-keep]");
   if (keep) {
     const [groupId, candidateId] = keep.dataset.keep.split("|");
@@ -180,6 +255,9 @@ document.addEventListener("click", async ev => {
 });
 
 load();
+
+const presetEvidence = new URLSearchParams(location.search).get("evidence");
+if (presetEvidence) openEvidence(presetEvidence);
 </script>
 </body>
 </html>

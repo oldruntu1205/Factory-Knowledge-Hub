@@ -216,7 +216,7 @@ def _issue_token(secret: str, tenant: str, principal: str) -> str:
         "tenant_id": tenant,
         "principal_id": principal,
         "roles": ["staff"],
-        "scope": ["knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve"],
+        "scope": ["knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve", "evidence.read"],
         "allowed_scopes": ["internal_product"],
     }
     return jwt.encode(payload, secret, algorithm="HS256")
@@ -246,6 +246,10 @@ class DemoHandler(BaseHTTPRequestHandler):
         if path == "/api/conflicts":
             query = f"?{parsed.query}" if parsed.query else ""
             self._proxy("GET", f"/v1/catalog/conflicts{query}", None)
+            return
+        if path.startswith("/api/evidence/"):
+            evidence_id = path.removeprefix("/api/evidence/")
+            self._proxy("GET", f"/v1/evidence/{evidence_id}", None)
             return
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
