@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import psycopg
@@ -41,6 +42,45 @@ def clear_tenant(conn: psycopg.Connection[Any]) -> None:
     conn.execute("SELECT set_config('app.tenant_id', '', false)")
 
 
+@contextmanager
+def tenant_connection(
+    pool: ConnectionPool[Any], tenant_id: Any
+) -> Iterator[psycopg.Connection[Any]]:
+    """**唯一**允许从连接池取连接的入口（L1 2026-11-07 放行门禁）。
+
+    契约：
+    1. 借出后、任何业务 SQL 之前绑定可信租户（会话级，commit 不会丢）；
+    2. 正常 / 异常 / 取消路径都执行清理；
+    3. 清理在**独立提交**里完成，不会被后续 rollback 撤销；
+    4. 清理失败即丢弃连接（关闭），绝不把带残留租户的连接还回池子。
+    """
+    with pool.connection() as conn:
+        bind_tenant(conn, tenant_id)
+        completed = False
+        try:
+            yield conn
+            completed = True
+        finally:
+            _release(conn, completed=completed)
+
+
+def _release(conn: psycopg.Connection[Any], *, completed: bool) -> None:
+    """归还前的收尾：先结算业务事务，再单开事务清租户；任何一步失败就丢弃连接。"""
+    try:
+        status = conn.info.transaction_status
+        if status == psycopg.pq.TransactionStatus.INERROR:
+            conn.rollback()  # abort 的事务必须先回滚，否则清理语句会被拒绝
+        elif status != psycopg.pq.TransactionStatus.IDLE:
+            if completed:
+                conn.commit()  # 业务成功：保住它的工作
+            else:
+                conn.rollback()  # 业务抛异常：整体回滚
+        conn.execute("SELECT set_config('app.tenant_id', '', false)")
+        conn.commit()  # 清理单独提交，不被后续 rollback 撤销
+    except Exception:  # noqa: BLE001 - 清理失败必须丢弃连接
+        conn.close()
+
+
 def get_conn(
     request: Request, context: PrincipalDep
 ) -> Iterator[psycopg.Connection[Any]]:
@@ -48,9 +88,5 @@ def get_conn(
     if pool is None:
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail="数据库未配置，业务端点不可用")
     # 退出上下文时提交；异常时回滚，事务边界即请求边界
-    with pool.connection() as conn:
-        bind_tenant(conn, context.tenant_id)
-        try:
-            yield conn
-        finally:
-            clear_tenant(conn)
+    with tenant_connection(pool, context.tenant_id) as conn:
+        yield conn
