@@ -134,3 +134,24 @@ def test_consumer_records_dead_letter_and_can_resume(
         done = consume_revoke_events(conn, world["tenant"], purge=purge_version_chunks)
         assert done.processed == 1, done
         assert _chunk_count(conn, world["tenant"], version_id) == 0
+
+
+def test_cli_runs_one_round_for_all_tenants(
+    admin: psycopg.Connection[Any], world: dict[str, Any], pg_url: str
+) -> None:
+    """命令行入口：cron 可直接调用，跑完返回统计。"""
+    from fkh.workers.revoke_purge import run_once
+
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(world["tenant"]),))
+        version_id = _ingest_and_publish(conn, world)
+        ReviewService(conn, world["tenant"]).revoke(version_id, world["actor"], "cli-test")
+        conn.commit()
+
+    totals = run_once(pg_url, tenant_id=world["tenant"])
+    assert totals["processed"] >= 1, totals
+    assert totals["failed"] == 0, totals
+
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(world["tenant"]),))
+        assert _chunk_count(conn, world["tenant"], version_id) == 0

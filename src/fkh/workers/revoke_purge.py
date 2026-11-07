@@ -147,10 +147,64 @@ def failed_deliveries(conn: psycopg.Connection[Any], tenant_id: UUID) -> list[di
     ]
 
 
+def run_once(dsn: str, *, tenant_id: UUID | None = None, reset: bool = False) -> dict[str, int]:
+    """命令行入口：跑一轮（或指定租户）撤销清理。
+
+    设计成可被 cron/计划任务直接调用：每次独立建连，不依赖常驻进程。
+    """
+    import psycopg as _psycopg
+
+    totals = {"processed": 0, "failed": 0, "dead_lettered": 0, "tenants": 0, "reset": 0}
+    with _psycopg.connect(dsn) as conn, conn.transaction():
+        tenants = (
+            [tenant_id]
+            if tenant_id is not None
+            else [UUID(str(row[0])) for row in conn.execute("SELECT id FROM tenants").fetchall()]
+        )
+    for current in tenants:
+        with _psycopg.connect(dsn) as conn:
+            conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(current),))
+            if reset:
+                totals["reset"] += reset_failed(conn, current)
+            result = consume_revoke_events(conn, current)
+            totals["processed"] += result.processed
+            totals["failed"] += result.failed
+            totals["dead_lettered"] += result.dead_lettered
+            totals["tenants"] += 1
+    return totals
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(description="撤销清理消费者：跑一轮持久消费")
+    parser.add_argument("--url", default=os.getenv("FKH_DATABASE_URL"), help="数据库 DSN")
+    parser.add_argument("--tenant", default=None, help="只处理该租户（默认处理全部）")
+    parser.add_argument("--reset-failed", action="store_true", help="先把死信重置为可重试")
+    args = parser.parse_args(argv)
+    if not args.url:
+        parser.error("缺少 --url 或环境变量 FKH_DATABASE_URL")
+    tenant = UUID(args.tenant) if args.tenant else None
+    totals = run_once(args.url, tenant_id=tenant, reset=args.reset_failed)
+    print(
+        f"tenants={totals['tenants']} processed={totals['processed']} "
+        f"failed={totals['failed']} dead_lettered={totals['dead_lettered']} "
+        f"reset={totals['reset']}"
+    )
+    return 0 if totals["failed"] == 0 else 1
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI 入口
+    raise SystemExit(main())
+
+
 __all__ = [
     "CONSUMER",
     "DeliveryResult",
     "consume_revoke_events",
     "failed_deliveries",
+    "main",
     "reset_failed",
+    "run_once",
 ]
