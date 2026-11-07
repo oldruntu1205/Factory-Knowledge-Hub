@@ -171,6 +171,33 @@ def _seed(
         )
         for index, acl in enumerate(child_acls or [{"allow": {"roles": ["staff"]}}])
     ]
+    # 2026-11-08：公开证据直读新增"可见代水位"闸门（L1 阻断项 4）。
+    # 本 fixture 用 SQL 直接造 PUBLISHED_PUBLIC，不经过 ReviewService 的发布动作，
+    # 因此按发布的等价效果补一代 READY + 水位，保持 fixture 与真实发布一致。
+    if status in {"APPROVED_INTERNAL", "PUBLISHED_PUBLIC"}:
+        generation = (
+            admin.execute(
+                "SELECT coalesce(max(index_generation), 0) + 1 FROM knowledge_chunks"
+                " WHERE tenant_id = %s",
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+        admin.execute(
+            "UPDATE knowledge_chunks SET index_generation = %s WHERE tenant_id = %s",
+            (generation, tenant_id),
+        )
+        admin.execute(
+            """INSERT INTO index_generations (tenant_id, generation, status, chunk_count)
+               VALUES (%s, %s, 'READY', 0)
+               ON CONFLICT (tenant_id, generation) DO NOTHING""",
+            (tenant_id, generation),
+        )
+        admin.execute(
+            """INSERT INTO index_visibility (tenant_id, generation) VALUES (%s, %s)
+               ON CONFLICT (tenant_id) DO UPDATE
+               SET generation = GREATEST(index_visibility.generation, EXCLUDED.generation)""",
+            (tenant_id, generation),
+        )
     admin.commit()
     return {
         "document_id": doc,

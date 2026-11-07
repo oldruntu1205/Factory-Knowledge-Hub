@@ -108,7 +108,7 @@ def org(admin: psycopg.Connection[Any], pg_url: str) -> dict[str, Any]:
         "customer_id": str(customer),
         "ops": tok(ops, ("knowledge.ingest", "knowledge.read", "knowledge.review",
                          "knowledge.publish", "knowledge.revoke", "knowledge.answer",
-                         "knowledge.search"),
+                         "knowledge.search", "evidence.read"),
                    ("internal_product", "customer_public")),
         "reviewer": tok(reviewer, ("knowledge.review",), ("customer_public",)),
         "publisher": tok(publisher, ("knowledge.publish_public",), ("customer_public",),
@@ -307,3 +307,37 @@ def _dsn(org: dict[str, Any]) -> str:
 
 def _customer_id(org: dict[str, Any]) -> str:
     return org["customer_id"]
+
+
+def test_public_evidence_direct_read_respects_watermark(
+    client: TestClient, org: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L1 阻断项 4：水位缺失时，公开内容不仅检索为空，**直读证据也必须拒绝**。"""
+    monkeypatch.setattr("fkh.api.main.get_generator",
+                        lambda *a, **k: _Scripted("规格为 200mm 38*300 24*24。"))
+    version_id = _upload(client, org, PUBLIC_DOC, public=True)
+    client.post(f"/v1/knowledge/{version_id}/review", json={"decision": "PASS"},
+                headers=_h(org["reviewer"]))
+    client.post(f"/v1/knowledge/{version_id}/publish", json={"audience": "internal"},
+                headers=_h(org["ops"]))
+    client.post(f"/v1/knowledge/{version_id}/publish", json={"audience": "customer_public"},
+                headers=_h(org["publisher"]))
+
+    with psycopg.connect(_dsn(org)) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(org["tenant"]),))
+        chunk_id = conn.execute(
+            "SELECT id FROM knowledge_chunks WHERE tenant_id = %s AND version_id = %s"
+            " AND chunk_kind = 'parent' LIMIT 1",
+            (org["tenant"], version_id),
+        ).fetchone()[0]
+
+    ok = client.get(f"/v1/evidence/{chunk_id}", headers=_h(org["ops"]))
+    assert ok.status_code == 200, ok.text
+
+    with psycopg.connect(_dsn(org)) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(org["tenant"]),))
+        conn.execute("DELETE FROM index_visibility WHERE tenant_id = %s", (org["tenant"],))
+        conn.commit()
+
+    blocked = client.get(f"/v1/evidence/{chunk_id}", headers=_h(org["ops"]))
+    assert blocked.status_code in {403, 404}, blocked.text

@@ -37,14 +37,32 @@
 撞 NOT NULL（实测报错）。`0024` 用 PG15+ 的列级写法 **`ON DELETE SET NULL (chunk_id)`**，
 只置空块 ID，保留 `version_id`/`locator`，审计仍可回答"引用过哪个版本的哪一段"。
 
-## 3. 已知边界（诚实）
+## 3. 消费闭环（`0025`，L1 阻断项 3 已补）
 
-1. **重建不是自动的**：`rebuild_visible_generation` 是显式调用（测试/运维脚本），
-   还没有定时 worker 消费 `knowledge.version.revoked.v1` 事件；
-2. **证据直读未加水位闸门**：证据服务用位置参数（`%s`）拼 SQL，与本轮命名参数闸门不兼容，
-   暂依赖"版本状态 + 重建删除"；这是已知缺口，不是设计选择；
-3. **缓存与签名链接**：本系统尚无缓存层与签名链接，§8.4 对应条目不适用（上线前若引入需重测）；
-4. **集中式死信/重试**：outbox 有事件，但消费端未实现重试策略（ADR-06 范围）。
+`fkh.workers.revoke_purge` 消费 `knowledge.version.revoked.v1` / `...discarded.v1`：
+
+| 要求 | 实现 |
+|---|---|
+| 持久 | 事件在 `outbox_events`，消费状态在 `outbox_deliveries`（`(tenant,event_id,consumer)` 主键） |
+| 幂等 | 已 `DONE` 的事件不再处理（重复消费 `processed=0`） |
+| 重试 | 失败累加 `attempts` 并保持 `PENDING`，下轮再试（上限 5） |
+| 死信/可追踪 | 耗尽转 `FAILED` 并记 `last_error`；`failed_deliveries()` 列出、`reset_failed()` 补偿重入 |
+
+通用消费框架（多消费者、调度、指标）仍留 ADR-06；本片只承担撤销清理这一条责任。
+
+## 4. 证据直读也受水位约束（L1 阻断项 4 已补）
+
+`_CHUNK_SQL` / `_PARENT_SQL` 对 `PUBLISHED_PUBLIC` 内容追加
+`index_generation <= 可见水位` 判断（用 `c.tenant_id` 关联，不改参数风格）。
+验收：同一块在水位存在时 200、水位被删除后 403 —— 与检索口径一致。
+内部内容（`APPROVED_INTERNAL`）仍按状态 + 范围判定。
+
+## 5. 已知边界（诚实）
+
+1. 消费端目前**没有常驻调度**：需要由运维/定时任务调用 `consume_revoke_events`（本片未接 cron）；
+2. 缓存与签名链接：本系统尚无缓存层与签名链接，§8.4 对应条目不适用（上线前若引入需重测）；
+3. 通用 outbox 框架（多消费者、指标、告警）留 ADR-06；
+4. **PG15+ 成为部署前置条件**（`ON DELETE SET NULL (chunk_id)` 语法要求）。
 
 ## 4. 验收
 

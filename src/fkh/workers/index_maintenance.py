@@ -108,6 +108,17 @@ def assert_version_index_ready(
     return max(generations)
 
 
+def purge_version_chunks(
+    conn: psycopg.Connection[Any], tenant_id: UUID, version_id: UUID
+) -> int:
+    """删除某一版本的块（幂等：已删则返回 0）。"""
+    result = conn.execute(
+        "DELETE FROM knowledge_chunks WHERE tenant_id = %s AND version_id = %s",
+        (tenant_id, version_id),
+    )
+    return int(result.rowcount)
+
+
 def rebuild_visible_generation(conn: psycopg.Connection[Any], tenant_id: UUID) -> int:
     """撤销后的重建收敛：物理删除已撤销/作废版本的块，切出新一代并切换可见代。
 
@@ -165,6 +176,7 @@ __all__ = [
     "assert_version_index_ready",
     "generation_state",
     "mark_generation_failed",
+    "purge_version_chunks",
     "mark_generation_ready",
     "rebuild_visible_generation",
     "switch_visible_generation",

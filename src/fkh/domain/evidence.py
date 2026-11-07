@@ -120,15 +120,27 @@ SELECT c.id, c.version_id, c.parent_chunk_id, c.chunk_kind, c.chunk_text, c.loca
   LEFT JOIN acl_policies p
     ON p.tenant_id = c.tenant_id AND p.id = c.acl_policy_id
  WHERE c.tenant_id = %s AND c.id = %s
+   AND (
+     v.status <> 'PUBLISHED_PUBLIC'
+     OR c.index_generation <= COALESCE(
+          (SELECT generation FROM index_visibility iv WHERE iv.tenant_id = c.tenant_id), 0)
+   )
 """
 
 _PARENT_SQL = """
 SELECT c.id, c.version_id, c.parent_chunk_id, c.chunk_kind, c.chunk_text, c.locator,
        c.heading_path, p.policy_json
   FROM knowledge_chunks c
+  JOIN knowledge_versions v
+    ON v.tenant_id = c.tenant_id AND v.id = c.version_id
   LEFT JOIN acl_policies p
     ON p.tenant_id = c.tenant_id AND p.id = c.acl_policy_id
  WHERE c.tenant_id = %s AND (c.id = %s OR c.parent_chunk_id = %s)
+   AND (
+     v.status <> 'PUBLISHED_PUBLIC'
+     OR c.index_generation <= COALESCE(
+          (SELECT generation FROM index_visibility iv WHERE iv.tenant_id = c.tenant_id), 0)
+   )
 """
 
 _AUDIT_SQL = """
