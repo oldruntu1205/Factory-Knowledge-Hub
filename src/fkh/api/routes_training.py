@@ -14,8 +14,9 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import psycopg
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
+from fkh.api.answer_exec import resolve_retrieval, run_answer
 from fkh.api.db import get_conn
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.models import (
@@ -23,8 +24,11 @@ from fkh.api.models import (
     AttemptSubmitRequest,
     CourseCreateRequest,
     QuestionCreateRequest,
+    SignoffRequest,
+    TrainingAskRequest,
 )
 from fkh.api.security import PrincipalDep
+from fkh.config import Settings, get_settings
 from fkh.domain.training import CourseNotFound, TrainingError, TrainingService
 
 router = APIRouter(tags=["training"])
@@ -180,4 +184,71 @@ def progress(
         raise _translate(exc) from exc
 
 
+@router.post("/v1/training/practical-signoffs", summary="导师实操签核")
+def practical_signoff(
+    payload: SignoffRequest,
+    context: PrincipalDep,
+    conn: ConnDep,
+) -> dict[str, Any]:
+    """导师人工签核（Rev2 §13：AI 不得自动授予上岗资格）。
+
+    签核人取自令牌 `sub`，请求体没有 assessor 字段——客户端无法替他人签核。
+    """
+    context.require_scope("mentor")
+    service = TrainingService(conn, context.tenant_id)
+    try:
+        return service.sign_off(
+            assignment_id=_uuid(payload.assignment_id, "assignment_id"),
+            assessor_subject_id=context.subject,
+            decision=payload.decision,
+            evidence_uri=payload.evidence_uri,
+        )
+    except (CourseNotFound, TrainingError) as exc:
+        raise _translate(exc) from exc
+
+
 __all__ = ["router"]
+
+
+TRAINING_SCOPE = "internal_training"
+
+
+@router.post("/v1/training/ask", summary="培训带引用问答")
+def training_ask(
+    request: Request,
+    payload: TrainingAskRequest,
+    context: PrincipalDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: ConnDep,
+) -> dict[str, Any]:
+    """学员带引用问答（Rev2 §13）。
+
+    与 `/v1/knowledge/answer` **同一条闸门**（同一检索、同一引用白名单、同一一致性检查），
+    区别只有两点：
+    1. 先确认任务属于本人且课程仍可用（撤销即暂停，不是权限问题）；
+    2. 知识范围固定为 `internal_training`，不接受调用方指定。
+    """
+    context.require_scope("learner")
+    # 数据范围：学员必须被授予培训范围，否则这里就拒（不能等检索层再兜）
+    if TRAINING_SCOPE not in context.allowed_scopes:
+        raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"缺少数据范围 {TRAINING_SCOPE}")
+
+    service = TrainingService(conn, context.tenant_id)
+    try:
+        service.assert_can_ask(_uuid(payload.assignment_id, "assignment_id"), context.subject)
+    except (CourseNotFound, TrainingError) as exc:
+        raise _translate(exc) from exc
+
+    mode, embedder = resolve_retrieval(settings)
+    return run_answer(
+        conn,
+        settings=settings,
+        context=context,
+        query=payload.question,
+        knowledge_scope=TRAINING_SCOPE,
+        language=payload.language,
+        max_evidence=5,
+        trace_id=str(getattr(request.state, "trace_id", "-")),
+        embedder=embedder,
+        retrieval_mode=mode,
+    )

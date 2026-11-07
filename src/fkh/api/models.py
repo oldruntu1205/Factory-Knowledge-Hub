@@ -156,3 +156,13 @@ class AttemptSubmitRequest(BaseModel):
     assignment_id: str
     responses: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class SignoffRequest(BaseModel):
+    """导师实操签核。刻意不含 assessor 字段：签核人只能来自令牌。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str
+    decision: Literal["PASS", "FAIL", "RETRY"]
+    evidence_uri: str | None = Field(default=None, max_length=500)

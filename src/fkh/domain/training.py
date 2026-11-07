@@ -458,6 +458,86 @@ class TrainingService:
             for row in rows
         ]
 
+    def assert_can_ask(self, assignment_id: uuid.UUID, learner_subject_id: str) -> dict[str, Any]:
+        """学员问答前置校验：任务属于本人，且课程仍可用。
+
+        三条拒绝语义与既有端点一致：
+        - 任务不存在 / 不属于本人 → `CourseNotFound`（对外统一 403，不泄露存在性）；
+        - 课程因知识撤销转 NEEDS_REVIEW → `TrainingError`（409：任务暂停，不是权限问题）。
+        """
+        self._bind()
+        row = self._conn.execute(
+            """SELECT a.course_id, c.status, c.version, c.title
+                 FROM training_assignments a
+                 JOIN training_courses c
+                   ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
+                WHERE a.tenant_id = %s AND a.assignment_id = %s
+                  AND a.learner_subject_id = %s""",
+            (self._tenant, assignment_id, learner_subject_id),
+        ).fetchone()
+        if row is None:
+            raise CourseNotFound(str(assignment_id))
+        if str(row[1]) != "PUBLISHED":
+            raise TrainingError(f"课程当前不可用（{row[1]}），问答暂停")
+        return {
+            "course_id": str(row[0]),
+            "course_version": int(row[2]),
+            "title": str(row[3]),
+        }
+
+    def sign_off(
+        self,
+        *,
+        assignment_id: uuid.UUID,
+        assessor_subject_id: str,
+        decision: str,
+        evidence_uri: str | None = None,
+    ) -> dict[str, Any]:
+        """导师实操签核（Rev2 §13：AI 不得自动授予上岗资格）。
+
+        - 只有持 `mentor` scope 的主体能调用（路由层校验）；
+        - 签核人必须是**人**（外部主体标识），不由系统代签；
+        - PASS → 任务 COMPLETED；FAIL/RETRY → REMEDIATION（补训，不新建任务）。
+        """
+        if decision not in {"PASS", "FAIL", "RETRY"}:
+            raise TrainingError(f"decision 非法：{decision}")
+        self._bind()
+        row = self._conn.execute(
+            """SELECT a.course_id, c.status
+                 FROM training_assignments a
+                 JOIN training_courses c
+                   ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
+                WHERE a.tenant_id = %s AND a.assignment_id = %s""",
+            (self._tenant, assignment_id),
+        ).fetchone()
+        if row is None:
+            raise CourseNotFound(str(assignment_id))
+        if str(row[1]) != "PUBLISHED":
+            raise TrainingError(f"课程当前不可用（{row[1]}），暂停签核")
+
+        signoff_id = uuid.uuid4()
+        self._conn.execute(
+            """INSERT INTO training_practical_signoffs
+                 (tenant_id, signoff_id, assignment_id, assessor_subject_id, decision, evidence_uri)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (self._tenant, signoff_id, assignment_id, assessor_subject_id, decision, evidence_uri),
+        )
+        status = "COMPLETED" if decision == "PASS" else "REMEDIATION"
+        self._conn.execute(
+            """UPDATE training_assignments
+                  SET status = %s,
+                      completed_at = CASE WHEN %s = 'COMPLETED' THEN now() ELSE completed_at END
+                WHERE tenant_id = %s AND assignment_id = %s""",
+            (status, status, self._tenant, assignment_id),
+        )
+        return {
+            "signoff_id": str(signoff_id),
+            "assignment_id": str(assignment_id),
+            "decision": decision,
+            "assignment_status": status,
+            "signed_at": None,
+        }
+
     # ---- 进度 --------------------------------------------------------------
     def progress(self, assignment_id: uuid.UUID, learner_subject_id: str) -> dict[str, Any]:
         self._bind()

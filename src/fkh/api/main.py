@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from fkh.answer import AnswerNotConfigured, AnswerService
 from fkh.api.db import create_pool
 from fkh.api.errors import ApiError, ErrorCode, error_body, install_error_handlers
-from fkh.api.models import AnswerRequest, TrainingAskRequest
+from fkh.api.models import AnswerRequest
 from fkh.api.routes_catalog_conflicts import router as catalog_conflicts_router
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_documents import router as documents_router
@@ -48,7 +48,6 @@ CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("GET", "/v1/interviews/{interview_id}", "interview.read", "查询转写与草稿状态"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
     ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
-    ("POST", "/v1/training/practical-signoffs", "mentor", "导师实操签核"),
     ("POST", "/v1/training/feedback", "learner", "培训反馈"),
 ]
 
@@ -153,11 +152,6 @@ def _answer(
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     return JSONResponse(content=outcome.payload)
-
-
-async def _training_ask(request: Request, payload: TrainingAskRequest, context: PrincipalDep) -> JSONResponse:
-    context.require_scope("learner")
-    raise ApiError(ErrorCode.NOT_IMPLEMENTED, detail="培训问答尚未接入（Phase 3）")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -307,19 +301,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             401: {"description": "未认证"},
             403: {"description": "无权限或 scope 越界"},
             503: {"description": "本地推理能力未就绪或不可达（审计记 ERROR）"},
-        },
-    )
-    app.add_api_route(
-        "/v1/training/ask",
-        _training_ask,
-        methods=["POST"],
-        summary="培训带引用问答",
-        tags=["training"],
-        dependencies=[Depends(require("learner"))],
-        responses={
-            401: {"description": "未认证"},
-            403: {"description": "无权限"},
-            501: {"description": "培训问答未接入"},
         },
     )
     return app
