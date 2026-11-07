@@ -826,6 +826,194 @@ paths:
               schema: {$ref: "../schema/error.json"}
         "422": {$ref: "#/components/responses/ValidationError"}
 
+  /v1/interviews/consents:
+    post:
+      tags: [interview]
+      summary: 登记录音授权（仅本人）
+      description: >-
+        ADR-05 未签前的保守实现：只允许受访者本人授权（`granted_by` 由服务端写成 subject 本身），
+        代授权一律拒绝；保留期必填且上限 3650 天。返回 consent_id。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [subject_id, method, retention_days]
+              properties:
+                subject_id: {type: string, minLength: 1, maxLength: 200}
+                method: {type: string, enum: [ORAL_WITH_RECEIPT, WRITTEN]}
+                retention_days: {type: integer, minimum: 1, maximum: 3650}
+                receipt_uri: {type: string, maxLength: 500}
+      responses:
+        "201":
+          description: 授权已登记
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [consent_id]
+                properties:
+                  consent_id: {type: string, format: uuid}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
+  /v1/interviews/consents/{consent_id}/revoke:
+    post:
+      tags: [interview]
+      summary: 撤回录音授权
+      description: >-
+        撤回即生效：删除该授权下所有转写、把草稿置为 WITHDRAWN（保留行与证据位供审计）、
+        访谈转 WITHDRAWN；此后该授权不能再建访谈。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: consent_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: {type: string, maxLength: 500}
+      responses:
+        "200":
+          description: 撤回结果
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [consent_id, interviews, transcripts_deleted, drafts_withdrawn]
+                properties:
+                  consent_id: {type: string, format: uuid}
+                  interviews: {type: integer}
+                  transcripts_deleted: {type: integer}
+                  drafts_withdrawn: {type: integer}
+                  reason: {type: [string, "null"]}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
+  /v1/interviews/{interview_id}/transcript:
+    post:
+      tags: [interview]
+      summary: 登记转写（RAW，任何检索路径不可见）
+      description: >-
+        转写只写 `interview_transcripts`，**不进入 knowledge_chunks**，
+        因此检索与问答都看不到；内容按 `[mm:ss]` 行解析为带时间戳证据位。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: interview_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [content]
+              properties:
+                content: {type: string, minLength: 1, maxLength: 200000}
+                kind: {type: string, enum: [MACHINE, HUMAN_EDITED], default: MACHINE}
+      responses:
+        "201":
+          description: 转写登记结果
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [transcript_id]
+                properties:
+                  transcript_id: {type: string, format: uuid}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
+  /v1/interviews/{interview_id}/drafts:
+    post:
+      tags: [interview]
+      summary: 生成带时间戳的草稿
+      description: >-
+        只做结构化，不做模型总结（ADR-05 未签）：按 `[mm:ss]` 段落抽取结论、
+        条件、例外、风险与证据位，落 `experience_drafts` 待人工审核。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: interview_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "201":
+          description: 草稿已生成
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [draft_id]
+                properties:
+                  draft_id: {type: string, format: uuid}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /v1/interviews/drafts/{draft_id}/review:
+    post:
+      tags: [interview]
+      summary: 人工审核经验草稿
+      description: >-
+        需要 `interview.review`；审核人取自令牌 `sub`，AI 不得自我批准。
+        APPROVE → APPROVED，REJECT → REJECTED；两者都会更新访谈状态。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: {type: string, enum: [APPROVE, REJECT]}
+                note: {type: string, maxLength: 1000}
+      responses:
+        "200":
+          description: 审核结果
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [draft_id, status, reviewer]
+                properties:
+                  draft_id: {type: string, format: uuid}
+                  status: {type: string, enum: [APPROVED, REJECTED]}
+                  reviewer: {type: string}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
 components:
   schemas:
     EvidenceResponse:

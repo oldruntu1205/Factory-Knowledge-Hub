@@ -24,6 +24,7 @@ from fkh.api.routes_catalog_conflicts import router as catalog_conflicts_router
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_documents import router as documents_router
 from fkh.api.routes_evidence import router as evidence_router
+from fkh.api.routes_interview import router as interview_router
 from fkh.api.routes_review import router as review_router
 from fkh.api.routes_search import resolve_embedder
 from fkh.api.routes_search import router as search_router
@@ -44,8 +45,6 @@ from fkh.retrieval.search import (
 # (方法, 路径, 所需权限, 说明)
 CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("POST", "/v1/sources", "knowledge.ingest", "申请上传与导入"),
-    ("POST", "/v1/interviews", "interview.create", "建立语音访谈任务"),
-    ("GET", "/v1/interviews/{interview_id}", "interview.read", "查询转写与草稿状态"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
     ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
     ("POST", "/v1/training/feedback", "learner", "培训反馈"),
@@ -286,6 +285,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(review_router)
     app.include_router(context_router)
     app.include_router(training_router)
+    app.include_router(interview_router)
     app.include_router(evidence_router)
     app.include_router(search_router)
 
