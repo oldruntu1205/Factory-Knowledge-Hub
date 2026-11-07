@@ -4,7 +4,10 @@
 不需要域名、不需要外网。
 
 ```powershell
-# 需要 _corpus/catalog_2023.md（目录文本）与本地 Ollama（可选）
+# 推荐：一键脚本（会先预检/拉起 Ollama，并检查 8000/8010 是否被旧进程占用）
+powershell -ExecutionPolicy Bypass -File scripts\demo-up.ps1
+
+# 或者手动
 uv run python -m fkh.tools.demo_app --provider ollama --model qwen3:14b
 ```
 
