@@ -216,6 +216,12 @@ function render() {
     if (d.status === "REVIEWED") {
       actions.push(`<button class="primary" data-publish="${esc(d.version_id)}">发布（内部可用）</button>`);
     }
+    if (d.status === "APPROVED_INTERNAL" || d.status === "PUBLISHED_PUBLIC") {
+      actions.push(`<button class="bad" data-revoke="${esc(d.version_id)}">撤下（立即失效）</button>`);
+    }
+    if (d.status === "DRAFT" || d.status === "REVIEWED") {
+      actions.push(`<button class="bad" data-discard="${esc(d.version_id)}">作废</button>`);
+    }
     if (d.status === "APPROVED_INTERNAL" && d.audience === "customer_public") {
       actions.push(
         `<button class="ok" data-publish-public="${esc(d.version_id)}">发布为对外（客户可见）</button>`
@@ -251,6 +257,20 @@ async function act(versionId, kind) {
     path = "/api/documents/" + encodeURIComponent(versionId) + "/review";
     payload = { decision: "REJECT", reason: reason || undefined };
     okText = "已驳回";
+  } else if (kind === "revoke") {
+    const reason = prompt("撤下原因（会进审计）：", "内容已过时，需重新出版本");
+    if (reason === null) return;
+    path = "/api/documents/" + encodeURIComponent(versionId) + "/revoke?reason=" +
+           encodeURIComponent(reason || "未填写原因");
+    payload = null;
+    okText = "已撤下：立即从检索与客户视角移除";
+  } else if (kind === "discard") {
+    const reason = prompt("作废原因（会进审计）：", "上传内容有误");
+    if (reason === null) return;
+    path = "/api/documents/" + encodeURIComponent(versionId) + "/discard?reason=" +
+           encodeURIComponent(reason || "未填写原因");
+    payload = null;
+    okText = "已作废";
   } else if (kind === "publish_public") {
     if (!confirm("对外发布后，客户视角可以检索到这份内容。确认？")) return;
     path = "/api/documents/" + encodeURIComponent(versionId) + "/publish";
@@ -261,11 +281,9 @@ async function act(versionId, kind) {
     payload = { audience: "internal" };
     okText = "已发布为内部可用（现在可被检索）";
   }
-  const { ok, body } = await api(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const { ok, body } = await api(path, payload === null
+    ? { method: "POST" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   if (!ok) {
     toast("操作失败：" + (body.error?.code || "?"), true);
     return;
@@ -335,6 +353,10 @@ document.addEventListener("click", ev => {
   if (pass) { act(pass.dataset.pass, "pass"); return; }
   const reject = ev.target.closest("[data-reject]");
   if (reject) { act(reject.dataset.reject, "reject"); return; }
+  const revoke = ev.target.closest("[data-revoke]");
+  if (revoke) { act(revoke.dataset.revoke, "revoke"); return; }
+  const discard = ev.target.closest("[data-discard]");
+  if (discard) { act(discard.dataset.discard, "discard"); return; }
   const publishPublic = ev.target.closest("[data-publish-public]");
   if (publishPublic) { act(publishPublic.dataset.publishPublic, "publish_public"); return; }
   const publish = ev.target.closest("[data-publish]");

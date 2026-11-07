@@ -230,7 +230,7 @@ _SCOPES = {
     "internal": [
         "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
         "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
-        "knowledge.publish",
+        "knowledge.publish", "knowledge.revoke",
     ],
     # 客户视角：只能问答/检索/看证据，且数据范围只有 customer_public
     "customer": ["knowledge.answer", "knowledge.search", "evidence.read"],
@@ -374,6 +374,12 @@ class DemoHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/documents/"):
             rest = parsed.path.removeprefix("/api/documents/")
             version_id, _, action = rest.partition("/")
+            if action in ("revoke", "discard"):
+                query = f"?{parsed.query}" if parsed.query else ""
+                self._proxy(
+                    "POST", f"/v1/knowledge/{version_id}/{action}{query}", None
+                )
+                return
             if action in ("review", "publish"):
                 length = int(self.headers.get("Content-Length") or 0)
                 payload = self.rfile.read(length) if length else b"{}"

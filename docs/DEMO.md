@@ -59,6 +59,18 @@ uv run python -m fkh.tools.demo_app --provider ollama --model qwen3:14b
 
 `全部丢弃` 表示该货号不设条目（需二次确认）；决议一次性生效，错判走新版本。
 
+## 撤下与作废（立即生效）
+
+文档审核页里每个已生效的版本都有「撤下（立即失效）」；`DRAFT`/`REVIEWED` 有「作废」。
+
+演示顺序：
+
+1. 任一 `APPROVED_INTERNAL` / `PUBLISHED_PUBLIC` 文档点「撤下」，填原因；
+2. 列表状态变 `REVOKED`；同一瞬间再去问，内部与客户视角都检索不到（无需等缓存）；
+3. 审计表 `review_actions` 里出现 `REVOKE` 记录，含操作者与原因。
+
+实测（本机演示库）：撤下客户版说明后，客户视角问「售后保修期」→ `REFUSED / NO_EVIDENCE`。
+
 ## 客户视角（对外发布链路）
 
 演示环境有**两套令牌**，切换的是服务端授权面，不是前端开关：
