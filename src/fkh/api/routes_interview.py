@@ -60,6 +60,14 @@ class DraftReviewRequest(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class PromoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: Literal["owner_experience", "quality", "training"] = "owner_experience"
+    required_scope: Literal["internal_product", "internal_training"] = "internal_product"
+    classification: int = Field(default=1, ge=0, le=2)
+
+
 class WithdrawRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -108,7 +116,12 @@ def revoke_consent(
     context.require_scope("interview.create")
     service = InterviewService(conn, context.tenant_id)
     try:
-        return service.revoke_consent(_uuid(consent_id, "consent_id"), reason=payload.reason)
+        return service.revoke_consent(
+            _uuid(consent_id, "consent_id"),
+            actor_id=context.principal_id,
+            actor_subject=context.subject,
+            reason=payload.reason,
+        )
     except (InterviewNotFound, InterviewError) as exc:
         raise _translate(exc) from exc
 
@@ -172,6 +185,37 @@ def review_draft(
             reviewer=context.subject,
             decision=payload.decision,
             note=payload.note,
+        )
+    except (InterviewNotFound, InterviewError) as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/v1/interviews/drafts/{draft_id}/promote",
+    status_code=201,
+    summary="把已批准草稿晋升为知识草稿（后续仍需审核/发布）",
+)
+def promote_draft(
+    draft_id: str,
+    payload: PromoteRequest,
+    context: PrincipalDep,
+    conn: ConnDep,
+) -> dict[str, Any]:
+    context.require_scope("knowledge.write")
+    if payload.required_scope not in context.allowed_scopes:
+        raise ApiError(
+            ErrorCode.ACCESS_DENIED,
+            detail=f"required_scope={payload.required_scope} 超出授权范围",
+        )
+    service = InterviewService(conn, context.tenant_id)
+    try:
+        return service.promote_draft(
+            _uuid(draft_id, "draft_id"),
+            actor_id=context.principal_id,
+            actor_subject=context.subject,
+            domain=payload.domain,
+            required_scope=payload.required_scope,
+            classification=payload.classification,
         )
     except (InterviewNotFound, InterviewError) as exc:
         raise _translate(exc) from exc

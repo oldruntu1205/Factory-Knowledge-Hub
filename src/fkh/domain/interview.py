@@ -100,7 +100,14 @@ class InterviewService:
             revoked_at=row[4],
         )
 
-    def revoke_consent(self, consent_id: uuid.UUID, *, reason: str | None = None) -> dict[str, Any]:
+    def revoke_consent(
+        self,
+        consent_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
+        actor_subject: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
         """撤回授权：删除该授权下所有转写，作废未发布草稿，访谈转 WITHDRAWN。"""
         self._bind()
         consent = self.consent(consent_id)
@@ -146,6 +153,45 @@ class InterviewService:
                 (self._tenant, interview_ids),
             )
             removed_transcripts = int(removed.rowcount)
+
+            # 已晋升的知识：授权撤回后必须撤下（不能静默保留），并写 outbox 供异步清理
+            promoted = self._conn.execute(
+                """SELECT DISTINCT d.promoted_version_id
+                     FROM experience_drafts d
+                    WHERE d.tenant_id = %s AND d.interview_id = ANY(%s)
+                      AND d.promoted_version_id IS NOT NULL""",
+                (self._tenant, interview_ids),
+            ).fetchall()
+            revoked_versions: list[str] = []
+            if promoted:
+                # 走状态机认可的路径：未发布的走 discard（DRAFT/REVIEWED → DISCARDED），
+                # 已批准的走 revoke（APPROVED_INTERNAL/PUBLISHED_PUBLIC → REVOKED）。
+                # 直接 UPDATE 会被 fkh_version_transition 触发器拒绝（实测 DRAFT→REVOKED 非法）。
+                from fkh.domain.review import ReviewService
+
+                review = ReviewService(self._conn, self._tenant)
+                for row in promoted:
+                    version_id = uuid.UUID(str(row[0]))
+                    status_row = self._conn.execute(
+                        "SELECT status FROM knowledge_versions WHERE tenant_id = %s AND id = %s",
+                        (self._tenant, version_id),
+                    ).fetchone()
+                    if status_row is None:
+                        continue
+                    status = str(status_row[0])
+                    try:
+                        if status in {"DRAFT", "REVIEWED"}:
+                            review.discard(
+                                version_id, actor_id, reason or "consent_withdrawn"
+                            )
+                            revoked_versions.append(str(version_id))
+                        elif status in {"APPROVED_INTERNAL", "PUBLISHED_PUBLIC"}:
+                            review.revoke(
+                                version_id, actor_id, reason or "consent_withdrawn"
+                            )
+                            revoked_versions.append(str(version_id))
+                    except Exception:  # noqa: BLE001 - 单条失败不阻断授权撤回本身
+                        continue
             self._conn.execute(
                 """UPDATE interviews SET status = 'WITHDRAWN', updated_at = now()
                     WHERE tenant_id = %s AND interview_id = ANY(%s)""",
@@ -156,6 +202,7 @@ class InterviewService:
             "interviews": len(interview_ids),
             "transcripts_deleted": removed_transcripts,
             "drafts_withdrawn": withdrawn_drafts,
+            "versions_revoked": revoked_versions,
             "reason": reason,
         }
 
@@ -322,6 +369,89 @@ class InterviewService:
             (status, self._tenant, row[0]),
         )
         return {"draft_id": str(draft_id), "status": status, "reviewer": reviewer}
+
+    def promote_draft(
+        self,
+        draft_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
+        actor_subject: str,
+        domain: str,
+        required_scope: str,
+        classification: int = 1,
+    ) -> dict[str, Any]:
+        """把已批准的经验草稿晋升为知识草稿版本。
+
+        约束（Rev2 §3.3）：
+        - 只有 `APPROVED` 且未撤回的草稿可晋升（AI 不能跳过人工审核）；
+        - 晋升只到 `DRAFT` 状态，后续仍需走技术审核与（如需对外）公开审批；
+        - 记录 `promoted_version_id`，使撤回授权时可连带撤销已晋升知识。
+        """
+        from fkh.authz.policy import AclPolicy
+        from fkh.domain.state_machine import VersionStatus
+        from fkh.workers.ingestion import IngestionRequest, ingest_document
+
+        if domain not in {"owner_experience", "quality", "training"}:
+            raise InterviewError(f"domain 非法：{domain}")
+        self._bind()
+        row = self._conn.execute(
+            """SELECT d.status, i.status, d.claim, d.conditions, d.exceptions, d.risks,
+                      d.interview_id, i.language
+                 FROM experience_drafts d
+                 JOIN interviews i ON i.tenant_id = d.tenant_id AND i.interview_id = d.interview_id
+                WHERE d.tenant_id = %s AND d.draft_id = %s""",
+            (self._tenant, draft_id),
+        ).fetchone()
+        if row is None:
+            raise InterviewNotFound(str(draft_id))
+        draft_status, interview_status = str(row[0]), str(row[1])
+        if draft_status != "APPROVED":
+            raise InterviewError(f"只有已批准的草稿可晋升，当前为 {draft_status}")
+        if interview_status == "WITHDRAWN":
+            raise InterviewError("访谈已撤回授权，不能晋升")
+        if self._consent_revoked(uuid.UUID(str(row[6]))):
+            raise InterviewError("授权已撤回，不能晋升")
+
+        body_parts = [f"采访记录（{actor_subject} 录入）", "", f"结论：{row[2]}"]
+        for label, value in (("条件", row[3]), ("例外", row[4]), ("风险", row[5])):
+            if value:
+                body_parts.extend(["", f"{label}：{value}"])
+        body_parts.extend(["", "说明：本条经验来自人工审核通过的访谈草稿，仍需技术审核后使用。"])
+        content = ("\n".join(body_parts) + "\n").encode()
+
+        acl = AclPolicy.from_json({"allow": {"roles": ["staff"]}, "deny": {}})
+        result = ingest_document(
+            self._conn,
+            self._tenant,
+            IngestionRequest(
+                source_id=f"draft-{draft_id}",
+                filename=f"experience-{draft_id}.md",
+                content=content,
+                knowledge_key=f"experience-{draft_id}",
+                title=f"经验记录：{str(row[2])[:40]}",
+                domain=domain,
+                owner_department="production",
+                classification=classification,
+                audience="internal",
+                required_scope=required_scope,
+                acl_policy=acl,
+                actor_id=actor_id,
+                language=str(row[7]),
+            ),
+        )
+        assert result.status is VersionStatus.DRAFT
+        self._conn.execute(
+            """UPDATE experience_drafts
+                  SET promoted_version_id = %s, promoted_at = now()
+                WHERE tenant_id = %s AND draft_id = %s""",
+            (result.version_id, self._tenant, draft_id),
+        )
+        return {
+            "draft_id": str(draft_id),
+            "document_id": str(result.document_id),
+            "version_id": str(result.version_id),
+            "status": result.status.value,
+        }
 
     # ---- 查询 --------------------------------------------------------------
     def view(

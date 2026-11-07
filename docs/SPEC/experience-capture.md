@@ -28,6 +28,7 @@
 | `POST /v1/interviews/{id}/transcript` | `interview.create` | 只写 RAW 表 |
 | `POST /v1/interviews/{id}/drafts` | `interview.create` | 只做结构化（不做模型总结） |
 | `POST /v1/interviews/drafts/{id}/review` | `interview.review` | 审核人取自令牌 `sub`；AI 不得自我批准 |
+| `POST /v1/interviews/drafts/{id}/promote` | `knowledge.write` | 只有 `APPROVED` 可晋升；产出 **DRAFT 版本**，仍需技术审核/公开审批；记录 `promoted_version_id` |
 | `GET /v1/interviews/{id}` | `interview.read` | 状态 + 转写计数 + 草稿与证据位 |
 
 ## 4. 验收要点
@@ -51,3 +52,15 @@
    （ADR-05 B2）——**不得对外宣称保留期已落实**；
 4. 第三方在场（客户/供应商声音）的单独同意：表结构可承载（一次访谈一份授权），
    校验逻辑待裁决（ADR-05 A4）。
+
+## 6. 草稿晋升与撤回联动（`0028`、2026-11-08）
+
+- **晋升**：`POST /v1/interviews/drafts/{id}/promote` → 生成知识 `DRAFT` 版本并写入
+  `experience_drafts.promoted_version_id`；调用者必须有 `knowledge.write`，
+  且 `required_scope` 在其授权范围内。晋升**不会**直接可检索——仍需走审核/发布闸门。
+- **撤回联动**：撤回授权时，已晋升版本按状态机走合法路径：
+  `DRAFT`/`REVIEWED` → `discard`（DISCARDED）；`APPROVED_INTERNAL`/`PUBLISHED_PUBLIC` → `revoke`（REVOKED）。
+  两者都会写 outbox，`DISCARDED`/`REVOKED` 也已被 `0019` 的课程联动触发器覆盖。
+  实测：直接 `UPDATE ... SET status='REVOKED'` 会被 `fkh_version_transition` 触发器拒绝
+  （`DRAFT → REVOKED` 非法），所以必须走领域方法。
+- 验收：晋升前 409；晋升后检索不到（DRAFT）；撤回后 `versions_revoked` 含该版本且问答不再命中。

@@ -76,7 +76,8 @@ def client(pg_url: str) -> Iterator[TestClient]:
         jwt_secret=SECRET, database_url=pg_url,
         retrieval_hash_key=HASH_KEY, retrieval_hash_key_id=HASH_KEY_ID,
     )
-    with TestClient(create_app(settings), raise_server_exceptions=False) as test_client:
+    import os
+    with TestClient(create_app(settings), raise_server_exceptions=os.getenv("FKH_RAISE")=="1") as test_client:
         yield test_client
 
 
@@ -103,7 +104,8 @@ def crew(admin: psycopg.Connection[Any]) -> dict[str, Any]:
                             scopes=("interview.create", "interview.read", "knowledge.search",
                                     "knowledge.answer"),
                             allowed=("internal_product", "internal_training")),
-        "reviewer": _token(tenant, reviewer, scopes=("interview.review", "interview.read"),
+        "reviewer": _token(tenant, reviewer,
+                           scopes=("interview.review", "interview.read", "knowledge.write"),
                            allowed=("internal_product",), roles=("mentor",)),
         "outsider": _token(tenant, outsider, scopes=("interview.read",),
                            allowed=("internal_product",)),
@@ -303,3 +305,90 @@ def test_outsider_cannot_read_interview(client: TestClient, crew: dict[str, Any]
 
     stakeholder = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["outsider"]))
     assert stakeholder.status_code == 403, "非本人且无 review 权限不得读取访谈"
+
+
+def test_promote_requires_approved_draft(
+    client: TestClient, crew: dict[str, Any]
+) -> None:
+    consent_id = _consent(client, crew)
+    interview_id = client.post(
+        "/v1/interviews",
+        json={"subject_id": crew["subject"], "consent_id": consent_id},
+        headers=_h(crew["worker"]),
+    ).json()["interview_id"]
+    client.post(f"/v1/interviews/{interview_id}/transcript",
+                json={"content": TRANSCRIPT}, headers=_h(crew["worker"]))
+    draft_id = client.post(f"/v1/interviews/{interview_id}/drafts",
+                           headers=_h(crew["worker"])).json()["draft_id"]
+
+    # 未批准 → 409
+    blocked = client.post(
+        f"/v1/interviews/drafts/{draft_id}/promote",
+        json={"domain": "owner_experience", "required_scope": "internal_product"},
+        headers=_h(crew["reviewer"]),
+    )
+    assert blocked.status_code == 409, blocked.text
+
+    client.post(
+        f"/v1/interviews/drafts/{draft_id}/review",
+        json={"decision": "APPROVE"}, headers=_h(crew["reviewer"]),
+    )
+    promoted = client.post(
+        f"/v1/interviews/drafts/{draft_id}/promote",
+        json={"domain": "owner_experience", "required_scope": "internal_product"},
+        headers=_h(crew["reviewer"]),
+    )
+    assert promoted.status_code == 201, promoted.text
+    body = promoted.json()
+    assert body["status"] == "DRAFT"
+
+    # 晋升只是 DRAFT：检索与问答都不该命中（知识闸门）
+    search = client.post(
+        "/v1/knowledge/search",
+        json={"query": "砂轮不平会出现橘皮纹", "knowledge_scope": "internal_product",
+              "max_results": 5},
+        headers=_h(crew["worker"]),
+    )
+    assert search.json()["results"] == [], "晋升出的 DRAFT 版本不应可检索"
+
+
+def test_withdraw_consent_revokes_promoted_knowledge(
+    client: TestClient, crew: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """撤回授权 → 已晋升版本被撤销，问答不再命中。"""
+    monkeypatch.setattr("fkh.api.main.get_generator",
+                        lambda *a, **k: _Scripted())
+    consent_id = _consent(client, crew)
+    interview_id = client.post(
+        "/v1/interviews",
+        json={"subject_id": crew["subject"], "consent_id": consent_id},
+        headers=_h(crew["worker"]),
+    ).json()["interview_id"]
+    client.post(f"/v1/interviews/{interview_id}/transcript",
+                json={"content": TRANSCRIPT}, headers=_h(crew["worker"]))
+    draft_id = client.post(f"/v1/interviews/{interview_id}/drafts",
+                           headers=_h(crew["worker"])).json()["draft_id"]
+    client.post(f"/v1/interviews/drafts/{draft_id}/review",
+                json={"decision": "APPROVE"}, headers=_h(crew["reviewer"]))
+    promoted = client.post(
+        f"/v1/interviews/drafts/{draft_id}/promote",
+        json={"domain": "owner_experience", "required_scope": "internal_product"},
+        headers=_h(crew["reviewer"]),
+    )
+    version_id = promoted.json()["version_id"]
+
+    revoked = client.post(
+        f"/v1/interviews/consents/{consent_id}/revoke",
+        json={"reason": "撤回"},
+        headers=_h(crew["worker"]),
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["versions_revoked"] == [version_id], revoked.json()
+
+    answer = client.post(
+        "/v1/knowledge/answer",
+        json={"query": "砂轮不平会出现橘皮纹吗？", "knowledge_scope": "internal_product",
+              "language": "zh-CN", "max_evidence": 5},
+        headers=_h(crew["worker"]),
+    )
+    assert answer.json()["status"] != "ANSWERED", answer.json()
