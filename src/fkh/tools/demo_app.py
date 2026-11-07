@@ -31,6 +31,7 @@ import psycopg
 
 from fkh.tools.conflict_page import CONFLICTS_PAGE
 from fkh.tools.demo_page import PAGE
+from fkh.tools.documents_page import DOCUMENTS_PAGE
 from fkh.tools.evidence_client import EVIDENCE_JS
 
 DEMO_TENANT_NAME = "三爱思演示"
@@ -217,7 +218,11 @@ def _issue_token(secret: str, tenant: str, principal: str) -> str:
         "tenant_id": tenant,
         "principal_id": principal,
         "roles": ["staff"],
-        "scope": ["knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve", "evidence.read"],
+        "scope": [
+            "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
+            "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
+            "knowledge.publish",
+        ],
         "allowed_scopes": ["internal_product"],
     }
     return jwt.encode(payload, secret, algorithm="HS256")
@@ -248,6 +253,10 @@ class DemoHandler(BaseHTTPRequestHandler):
             query = f"?{parsed.query}" if parsed.query else ""
             self._proxy("GET", f"/v1/catalog/conflicts{query}", None)
             return
+        if path == "/api/documents":
+            query = f"?{parsed.query}" if parsed.query else ""
+            self._proxy("GET", f"/v1/knowledge/documents{query}", None)
+            return
         if path.startswith("/api/evidence/"):
             evidence_id = path.removeprefix("/api/evidence/")
             self._proxy("GET", f"/v1/evidence/{evidence_id}", None)
@@ -257,6 +266,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         if path in ("/conflicts", "/conflicts/"):
             self._send(200, CONFLICTS_PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if path in ("/documents", "/documents/"):
+            self._send(200, DOCUMENTS_PAGE.encode(), "text/html; charset=utf-8")
             return
         if path == "/assets/evidence.js":
             self._send(200, EVIDENCE_JS.encode(), "application/javascript; charset=utf-8")
@@ -294,6 +306,21 @@ class DemoHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/documents":
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length) if length else b"{}"
+            self._proxy("POST", "/v1/knowledge/documents", payload)
+            return
+        if parsed.path.startswith("/api/documents/"):
+            rest = parsed.path.removeprefix("/api/documents/")
+            version_id, _, action = rest.partition("/")
+            if action in ("review", "publish"):
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = self.rfile.read(length) if length else b"{}"
+                self._proxy(
+                    "POST", f"/v1/knowledge/{version_id}/{action}", payload
+                )
+                return
         if parsed.path.startswith("/api/conflicts/") and parsed.path.endswith("/resolve"):
             group_id = parsed.path.removeprefix("/api/conflicts/").removesuffix("/resolve")
             length = int(self.headers.get("Content-Length") or 0)

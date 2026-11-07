@@ -65,7 +65,7 @@ PAGE = r"""<!doctype html>
 <body>
 <header>
   <h1>Factory Knowledge Hub</h1>
-  <span class="tag">本地私域模拟</span>
+  <nav style="display:flex;gap:8px"><a href="/" style="color:#e6edf3;text-decoration:none;font-size:14px;padding:4px 10px;border:1px solid #243040;border-radius:8px">问答</a><a href="/conflicts" style="color:#8b9bb0;text-decoration:none;font-size:14px;padding:4px 10px;border:1px solid transparent;border-radius:8px">冲突待办</a><a href="/documents" style="color:#8b9bb0;text-decoration:none;font-size:14px;padding:4px 10px;border:1px solid transparent;border-radius:8px">文档审核</a></nav><span class="tag">本地私域模拟</span>
   <span class="tag">127.0.0.1 · 无外网</span>
   <span class="tag" id="provider-tag">provider: …</span>
 </header>

@@ -59,6 +59,20 @@ uv run python -m fkh.tools.demo_app --provider ollama --model qwen3:14b
 
 `全部丢弃` 表示该货号不设条目（需二次确认）；决议一次性生效，错判走新版本。
 
+## 文档审核页（业务前端第二片）
+
+页面接 `POST/GET /v1/knowledge/documents` 与既有 review/publish（JWT 由演示服务端代持）。
+
+演示顺序（实测约 2 分钟，含一次真实问答）：
+
+1. 选一个文本文件（如 `_corpus/` 里的说明文档），填标题、业务域、范围；
+2. 点「上传并入库」→ 提示 `DRAFT` 与切片数，列表里出现该文档（待审视图）；
+3. 点「通过审核」→ 状态变 `REVIEWED`，按钮换成「发布（内部可用）」；
+4. 点「发布」→ `APPROVED_INTERNAL`，此时才可被检索；
+5. 回问答页问该文档里的问题 → 有引用；点引用看原文。
+
+注意：`DRAFT` 状态下搜索不到是**正确行为**（审核未过）。
+
 ## 停止
 
 前台运行时 `Ctrl+C`：会先停 API、再 `pg_ctl stop -m fast` 停数据库。
