@@ -33,6 +33,7 @@ from fkh.tools.conflict_page import CONFLICTS_PAGE
 from fkh.tools.demo_page import PAGE
 from fkh.tools.documents_page import DOCUMENTS_PAGE
 from fkh.tools.evidence_client import EVIDENCE_JS
+from fkh.tools.experience_page import EXPERIENCE_PAGE
 from fkh.tools.training_page import TRAINING_PAGE
 
 DEMO_TENANT_NAME = "三爱思演示"
@@ -280,6 +281,7 @@ def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
         stats = {
             "tenant": str(tenant),
             "principal": str(principal),
+            "subject": f"{str(principal)[:8]}@demo.local",
             "public_principal": str(public_principal),
             "chunks": int(
                 _scalar(
@@ -311,7 +313,8 @@ _SCOPES = {
     "internal": [
         "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
         "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
-        "knowledge.publish", "knowledge.revoke", "learner",
+        "knowledge.publish", "knowledge.revoke", "knowledge.write", "learner",
+        "interview.create", "interview.read", "interview.review",
     ],
     # 客户视角：只能问答/检索/看证据，且数据范围只有 customer_public
     "customer": ["knowledge.answer", "knowledge.search", "evidence.read"],
@@ -385,6 +388,10 @@ class DemoHandler(BaseHTTPRequestHandler):
             query = f"?{parsed.query}" if parsed.query else ""
             self._proxy("GET", f"/v1/catalog/conflicts{query}", None)
             return
+        if path.startswith("/api/interviews/"):
+            rest = path.removeprefix("/api/interviews/")
+            self._proxy("GET", f"/v1/interviews/{rest}", None)
+            return
         if path == "/api/training/assignments":
             self._proxy("GET", "/v1/training/me/assignments", None)
             return
@@ -411,6 +418,9 @@ class DemoHandler(BaseHTTPRequestHandler):
         if path in ("/conflicts", "/conflicts/"):
             self._send(200, CONFLICTS_PAGE.encode(), "text/html; charset=utf-8")
             return
+        if path in ("/experience", "/experience/"):
+            self._send(200, EXPERIENCE_PAGE.encode(), "text/html; charset=utf-8")
+            return
         if path in ("/training", "/training/"):
             self._send(200, TRAINING_PAGE.encode(), "text/html; charset=utf-8")
             return
@@ -427,6 +437,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "items": self.stats.get("items"),
                 "conflicts_open": self.stats.get("conflicts_open"),
                 "provider": self.provider,
+                # 经验采集页需要"当前演示身份"作为受访者（授权只允许本人）
+                "subject": self.stats.get("subject"),
             }
             self._send(200, json.dumps(body, ensure_ascii=False).encode(), "application/json")
             return
@@ -462,6 +474,14 @@ class DemoHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/interviews"):
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length) if length else b"{}"
+            target = "/v1/interviews" + parsed.path.removeprefix("/api/interviews")
+            if parsed.query:
+                target += "?" + parsed.query
+            self._proxy("POST", target, payload)
+            return
         if parsed.path == "/api/training/ask":
             length = int(self.headers.get("Content-Length") or 0)
             payload = self.rfile.read(length) if length else b"{}"
