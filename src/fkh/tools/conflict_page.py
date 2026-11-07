@@ -56,6 +56,17 @@ CONFLICTS_PAGE = r"""<!doctype html>
   .toast.show { opacity:1; }
   .toast.err { border-color:var(--bad); color:var(--bad); }
   .hint { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+  .toolbar input[type=search] { flex:1; min-width:220px; padding:9px 12px; border-radius:9px;
+                                border:1px solid var(--line); background:var(--panel);
+                                color:var(--text); font-size:14px; }
+  .toolbar input[type=search]:focus { outline:none; border-color:var(--accent); }
+  .toolbar select { padding:9px 10px; border-radius:9px; border:1px solid var(--line);
+                    background:var(--panel); color:var(--text); font-size:14px; }
+  .toolbar .toggle { padding:8px 12px; border-radius:9px; border:1px solid var(--line);
+                     background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
+  .toolbar .toggle.on { color:var(--text); border-color:var(--accent); }
+  .diff { font-size:12px; color:var(--warn); margin-left:8px; }
   button.ghost { padding:2px 8px; font-size:12px; color:var(--muted); margin-left:8px; }
   button.ghost:hover { color:var(--accent); }
 </style>
@@ -76,6 +87,20 @@ CONFLICTS_PAGE = r"""<!doctype html>
     <span id="loading">加载中…</span>
   </div>
 
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="按货号搜索，例如 A1124" autocomplete="off" />
+    <select id="status">
+      <option value="OPEN">待办（OPEN）</option>
+      <option value="KEEP">已保留（KEEP）</option>
+      <option value="DROP_ALL">已丢弃（DROP_ALL）</option>
+    </select>
+    <select id="sort">
+      <option value="code">按货号排序</option>
+      <option value="diff">按价差从大到小</option>
+    </select>
+    <button class="toggle" id="same-price">只看同价</button>
+  </div>
+
   <div id="list"></div>
   <div id="empty" class="empty" style="display:none">没有待办。所有冲突都已决议。</div>
   <div class="hint">决议一次性生效、不可原地改判；错判请走新版本。KEEP 会用所选候选的行回填目录条目。</div>
@@ -84,7 +109,35 @@ CONFLICTS_PAGE = r"""<!doctype html>
 <script src="/assets/evidence.js"></script>
 
 <script>
-const state = { items: [] };
+const state = { items: [], all: [], q: "", status: "OPEN", sort: "code", samePrice: false };
+
+function priceNum(raw) {
+  const n = parseFloat(String(raw ?? "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+function priceSpread(group) {
+  const nums = (group.candidates || []).map(c => priceNum(c.raw_price)).filter(n => n !== null);
+  if (nums.length < 2) return 0;
+  return Math.max(...nums) - Math.min(...nums);
+}
+
+function visibleItems() {
+  let items = state.items.slice();
+  if (state.q) {
+    const needle = state.q.trim().toUpperCase();
+    items = items.filter(g => String(g.code).toUpperCase().includes(needle));
+  }
+  if (state.samePrice) {
+    items = items.filter(g => priceSpread(g) === 0);
+  }
+  if (state.sort === "diff") {
+    items.sort((a, b) => priceSpread(b) - priceSpread(a) || String(a.code).localeCompare(String(b.code)));
+  } else {
+    items.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  }
+  return items;
+}
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -104,7 +157,7 @@ function toast(msg, isErr) {
 }
 
 async function load() {
-  const res = await fetch("/api/conflicts?status=OPEN&limit=50");
+  const res = await fetch("/api/conflicts?status=" + encodeURIComponent(state.status) + "&limit=200");
   const body = await res.json();
   if (!res.ok) {
     document.getElementById("loading").textContent = "加载失败：" + (body.error?.code || res.status);
@@ -116,14 +169,19 @@ async function load() {
 }
 
 function render() {
-  const totalGroups = state.items.length;
-  const totalCands = state.items.reduce((n, g) => n + (g.candidates?.length || 0), 0);
+  const shown = visibleItems();
+  const totalGroups = shown.length;
+  const totalCands = shown.reduce((n, g) => n + (g.candidates?.length || 0), 0);
   document.getElementById("total").textContent = totalGroups;
   document.getElementById("cands").textContent = totalCands;
-  document.getElementById("empty").style.display = totalGroups ? "none" : "block";
+  const emptyEl = document.getElementById("empty");
+  emptyEl.style.display = totalGroups ? "none" : "block";
+  emptyEl.textContent = state.items.length
+    ? "当前筛选没有匹配的待办。"
+    : "这个状态下没有待办。";
 
   const list = document.getElementById("list");
-  list.innerHTML = state.items.map(group => {
+  list.innerHTML = shown.map(group => {
     const rows = (group.candidates || []).map(c => `
       <div class="row">
         <div class="spec">${esc(c.spec)}<button class="ghost" data-ev="${esc(c.chunk_id)}" data-price="${esc(c.raw_price)}" data-spec="${esc(c.spec)}">原文</button></div>
@@ -139,6 +197,9 @@ function render() {
           <span class="code">${esc(group.code)}</span>
           <span class="badge">${esc(group.status)}</span>
           <span class="badge">版本 ${esc(String(group.version_id).slice(0, 8))}</span>
+          ${priceSpread(group) > 0
+            ? '<span class="diff">价差 ¥ ' + priceSpread(group).toFixed(2) + '</span>'
+            : '<span class="badge">同价</span>'}
         </div>
         ${rows}
         <div class="actions">
@@ -159,27 +220,12 @@ async function resolve(groupId, payload, okText) {
     toast("决议失败：" + (body.error?.code || res.status), true);
     return false;
   }
-  state.items = state.items.filter(g => g.group_id !== groupId);
+  if (state.status === "OPEN") {
+    state.items = state.items.filter(g => g.group_id !== groupId);
+  }
   render();
   toast(okText);
   return true;
-}
-
-function renderEvidence(text, price, spec) {
-  const anchor = specToken(spec);
-  const lines = String(text || "").split("\n");
-  let hits = 0;
-  const html = lines.map(line => {
-    const norm = line.replace(/\s+/g, " ");
-    const hitPrice = price && norm.includes(String(price));
-    const hitSpec = anchor && norm.includes(anchor);
-    if (hitPrice && hitSpec) {
-      hits += 1;
-      return '<div class="ev-line hit"><mark>' + esc(line) + '</mark></div>';
-    }
-    return '<div class="ev-line">' + esc(line) + '</div>';
-  }).join("");
-  return { html, hits, anchor };
 }
 
 document.addEventListener("click", async ev => {
@@ -201,7 +247,32 @@ document.addEventListener("click", async ev => {
   }
 });
 
-const presetEvidence = new URLSearchParams(location.search).get("evidence");
+const params = new URLSearchParams(location.search);
+const presetEvidence = params.get("evidence");
+// 支持 /conflicts?q=A11&status=KEEP&sort=diff&same=1（演示与截图用）
+if (params.get("q")) { state.q = params.get("q"); document.getElementById("q").value = state.q; }
+if (params.get("status")) { state.status = params.get("status"); document.getElementById("status").value = state.status; }
+if (params.get("sort")) { state.sort = params.get("sort"); document.getElementById("sort").value = state.sort; }
+if (params.get("same") === "1") { state.samePrice = true; document.getElementById("same-price").classList.add("on"); }
+document.getElementById("q").addEventListener("input", ev => {
+  state.q = ev.target.value;
+  render();
+});
+document.getElementById("status").addEventListener("change", ev => {
+  state.status = ev.target.value;
+  document.getElementById("loading").textContent = "加载中…";
+  load();
+});
+document.getElementById("sort").addEventListener("change", ev => {
+  state.sort = ev.target.value;
+  render();
+});
+document.getElementById("same-price").addEventListener("click", ev => {
+  state.samePrice = !state.samePrice;
+  ev.target.classList.toggle("on", state.samePrice);
+  render();
+});
+
 load().then(() => {
   if (!presetEvidence) return;
   const byId = state.items.flatMap(g => g.candidates || []).find(c => c.chunk_id === presetEvidence);
