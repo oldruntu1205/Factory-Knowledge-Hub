@@ -256,26 +256,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _register_contract_routes(app)
     MAX_REQUEST_BYTES = 8 * 1024 * 1024
 
-    @app.middleware("http")
-    async def _limit_upload_body(request: Any, call_next: Any) -> Any:
-        """上传接口的请求体上限（裁决 2）：不能先无上限读完整请求再检查。
+    def _payload_too_large(request: Request) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content=error_body(
+                ErrorCode.PAYLOAD_TOO_LARGE, str(getattr(request.state, "trace_id", "-"))
+            ),
+        )
 
-        只看声明了 Content-Length 的请求；chunked 请求仍会进入路由，
-        由 base64 解码后的字节数二次校验（≤5 MiB）兜底。
-        """
+    @app.middleware("http")
+    async def _limit_upload_body(
+        request: Request, call_next: Callable[[Request], Awaitable[Any]]
+    ) -> Any:
+        # 上传请求体硬上限（L1 终审 2026-11-07 §3）：只查 Content-Length 不够，
+        # chunked 或"声明长度与实际不符"都能绕过，因此在接收层逐块累计，
+        # 超过 8 MiB 立刻 413，不把整包缓冲完再判断。
         if request.url.path == "/v1/knowledge/documents" and request.method == "POST":
-            raw_length = request.headers.get("content-length")
-            if raw_length is not None and raw_length.isdigit() and int(raw_length) > MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    status_code=413,
-                    content=error_body(
-                        ErrorCode.PAYLOAD_TOO_LARGE,
-                        str(getattr(request.state, "trace_id", "-")),
-                    ),
-                )
+            declared = request.headers.get("content-length")
+            if declared is not None and declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
+                return _payload_too_large(request)
+            received = 0
+            buffered: list[bytes] = []
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > MAX_REQUEST_BYTES:
+                    return _payload_too_large(request)
+                buffered.append(chunk)
+            # 回填已缓冲正文供下游解析；否则流已耗尽，解析会拿到空 body
+            request._body = b"".join(buffered)
         return await call_next(request)
 
     app.include_router(catalog_conflicts_router)
+    app.include_router(documents_router)
     app.include_router(documents_router)
     app.include_router(review_router)
     app.include_router(context_router)

@@ -381,3 +381,98 @@ def test_failure_midway_leaves_nothing(
         "SELECT count(*) FROM knowledge_chunks WHERE tenant_id = %s", (seeded["tenant"],)
     ).fetchone()[0]
     assert (docs, versions, chunks) == (0, 0, 0)
+
+
+def test_chunked_body_without_length_is_capped(
+    client: TestClient, admin: psycopg.Connection[Any], seeded: dict[str, str]
+) -> None:
+    """不带 Content-Length 的 chunked 请求也不能绕过硬上限（L1 终审 §3）。"""
+
+    def body() -> Iterator[bytes]:
+        yield b'{"filename":"c.md","title":"t","domain":"product_catalog",'
+        yield b'"owner_department":"sales","required_scope":"internal_product",'
+        yield b'"knowledge_key":"k-chunked","content_base64":"'
+        # 9 MiB 的 base64 分块发送，且全程不带 Content-Length
+        pad = b"a" * (512 * 1024)
+        for _ in range(18):
+            yield pad
+        yield b'"}'
+
+    response = client.post(
+        "/v1/knowledge/documents",
+        content=body(),
+        headers={
+            "Authorization": f"Bearer {seeded['token']}",
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+    admin.execute("SELECT set_config('app.tenant_id', %s, false)", (seeded["tenant"],))
+    docs = admin.execute(
+        "SELECT count(*) FROM knowledge_documents WHERE tenant_id = %s", (seeded["tenant"],)
+    ).fetchone()[0]
+    assert docs == 0, "被拒绝的请求不得留下任何文档"
+
+
+def test_lying_content_length_cannot_bypass_cap(
+    client: TestClient, admin: psycopg.Connection[Any], seeded: dict[str, str]
+) -> None:
+    """声明长度远小于实际正文（或声明合法但实际超限）时，仍按实际字节数拦截。"""
+    import asyncio
+    import json
+
+    import httpx
+
+    app = client.app
+    chunk = b"a" * (1024 * 1024)
+    state = {"sent": 0}
+
+    async def receive() -> dict[str, Any]:
+        state["sent"] += 1
+        if state["sent"] <= 9:
+            return {"type": "http.request", "body": chunk, "more_body": True}
+        if state["sent"] == 10:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    captured: dict[str, Any] = {}
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            captured["status"] = message["status"]
+        elif message["type"] == "http.response.body":
+            captured.setdefault("body", b"")
+            captured["body"] += message.get("body", b"")
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/knowledge/documents",
+        "raw_path": b"/v1/knowledge/documents",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/json"),
+            (b"content-length", b"1024"),  # 声明 1 KiB，实际 9 MiB
+            (b"authorization", f"Bearer {seeded['token']}".encode()),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(app(scope, receive, send))
+
+    assert captured["status"] == 413
+    assert json.loads(captured["body"])["error"]["code"] == "PAYLOAD_TOO_LARGE"
+    assert httpx is not None
+
+    admin.execute("SELECT set_config('app.tenant_id', %s, false)", (seeded["tenant"],))
+    docs = admin.execute(
+        "SELECT count(*) FROM knowledge_documents WHERE tenant_id = %s", (seeded["tenant"],)
+    ).fetchone()[0]
+    assert docs == 0
