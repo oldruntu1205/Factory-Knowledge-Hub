@@ -58,21 +58,28 @@ class InterviewService:
         subject_id: str,
         method: str,
         retention_days: int,
-        granted_by: str | None = None,
+        authenticated_subject: str,
         receipt_uri: str | None = None,
     ) -> uuid.UUID:
+        """登记授权。
+
+        L1 2026-11-08：`granted_by` 必须由**服务端绑定当前认证主体**，
+        不能只校验调用方提交的 `granted_by == subject_id`（那等于让改写请求体自证）。
+        因此这里要求 `authenticated_subject == subject_id`：只有本人账号能授权；
+        班组长代授权（ADR-05 A3）未裁决，一律拒绝。
+        """
         self._bind()
         if method not in {"ORAL_WITH_RECEIPT", "WRITTEN"}:
             raise InterviewError(f"授权形式非法：{method}")
-        if granted_by is not None and granted_by != subject_id:
-            # 代授权需要书面授权书，ADR-05 A3 未裁决前一律拒绝
-            raise InterviewError("只允许受访者本人授权")
+        if authenticated_subject != subject_id:
+            raise InterviewError("只允许受访者本人授权（需本人账号）")
         consent_id = uuid.uuid4()
         self._conn.execute(
             """INSERT INTO interview_consents
                  (tenant_id, consent_id, subject_id, method, receipt_uri, retention_days, granted_by)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (self._tenant, consent_id, subject_id, method, receipt_uri, retention_days, subject_id),
+            (self._tenant, consent_id, subject_id, method, receipt_uri, retention_days,
+             authenticated_subject),
         )
         return consent_id
 
@@ -114,9 +121,21 @@ class InterviewService:
         if interview_ids:
             # 先作废草稿（保留行与证据位供审计），再删转写；
             # FK 为 ON DELETE SET NULL (transcript_id)，草稿行不会被级联带走。
+            # L1 2026-11-08：撤回后保留审计行，但**清除内容载荷**（claim/条件/例外/风险/引文）；
+            # 时间位置可保留（不含原文），避免"撤回=数据仍可读"。
             drafts = self._conn.execute(
                 """UPDATE experience_drafts
-                      SET status = 'WITHDRAWN'
+                      SET status = 'WITHDRAWN',
+                          claim = '',
+                          conditions = NULL,
+                          exceptions = NULL,
+                          risks = NULL,
+                          evidence_spans = (
+                            SELECT coalesce(jsonb_agg(
+                                     jsonb_build_object('start_ms', span->'start_ms',
+                                                        'end_ms', span->'end_ms')), '[]'::jsonb)
+                              FROM jsonb_array_elements(evidence_spans) AS span
+                          )
                     WHERE tenant_id = %s AND interview_id = ANY(%s)
                       AND status <> 'WITHDRAWN'""",
                 (self._tenant, interview_ids),
@@ -144,6 +163,11 @@ class InterviewService:
     def create_interview(
         self, *, subject_id: str, consent_id: uuid.UUID, interviewer: str, language: str
     ) -> uuid.UUID:
+        """建立访谈。
+
+        L1 2026-11-08：持有 `interview.create` **不等于**可以使用任意人的授权——
+        访谈主体必须与授权主体一致，且授权仍然有效。
+        """
         self._bind()
         consent = self.consent(consent_id)
         if consent is None:
@@ -152,6 +176,10 @@ class InterviewService:
             raise InterviewError("授权已撤回，不能建立访谈")
         if consent.subject_id != subject_id:
             raise InterviewError("授权主体与受访者不一致")
+        if interviewer != subject_id:
+            # L1 2026-11-08：持有 interview.create 不等于可以使用任意人的授权。
+            # 在 ADR-05 A3（代授权）裁决前，只允许授权本人在自己的会话里建立访谈。
+            raise InterviewError("只能由授权本人建立访谈")
         interview_id = uuid.uuid4()
         self._conn.execute(
             """INSERT INTO interviews
@@ -162,17 +190,23 @@ class InterviewService:
         return interview_id
 
     def add_transcript(
-        self, interview_id: uuid.UUID, *, content: str, kind: str = "MACHINE"
+        self, interview_id: uuid.UUID, *, content: str, actor: str, kind: str = "MACHINE"
     ) -> uuid.UUID:
         self._bind()
         row = self._conn.execute(
-            "SELECT status FROM interviews WHERE tenant_id = %s AND interview_id = %s",
+            "SELECT status, interviewer FROM interviews"
+            " WHERE tenant_id = %s AND interview_id = %s",
             (self._tenant, interview_id),
         ).fetchone()
         if row is None:
             raise InterviewNotFound(str(interview_id))
+        if str(row[1]) != actor:
+            # 对象级权限：只有该访谈的建立者（=授权本人）能写入
+            raise InterviewNotFound(str(interview_id))
         if str(row[0]) != "CONSENTED":
             raise InterviewError(f"当前状态 {row[0]} 不接受新转写")
+        if self._consent_revoked(interview_id):
+            raise InterviewError("授权已撤回，不能登记转写")
         if not content.strip():
             raise InterviewError("转写内容为空")
         transcript_id = uuid.uuid4()
@@ -190,13 +224,21 @@ class InterviewService:
         return transcript_id
 
     # ---- 草稿 --------------------------------------------------------------
-    def build_draft(self, interview_id: uuid.UUID) -> uuid.UUID:
+    def build_draft(self, interview_id: uuid.UUID, *, actor: str) -> uuid.UUID:
         """把转写切成"带时间戳的证据位 + 结论"，生成待人工审核的草稿。
 
         无 ASR：转写文本按 `[mm:ss]` 行解析；没有时间戳的行按顺序累积到上一段。
         这不是"AI 总结"，只是结构化，避免在 ADR-05 未签时引入模型判断。
         """
         self._bind()
+        owner = self._conn.execute(
+            "SELECT interviewer FROM interviews WHERE tenant_id = %s AND interview_id = %s",
+            (self._tenant, interview_id),
+        ).fetchone()
+        if owner is None or str(owner[0]) != actor:
+            raise InterviewNotFound(str(interview_id))
+        if self._consent_revoked(interview_id):
+            raise InterviewError("授权已撤回，不能生成草稿")
         row = self._conn.execute(
             """SELECT t.transcript_id, t.content FROM interview_transcripts t
                 WHERE t.tenant_id = %s AND t.interview_id = %s
@@ -249,6 +291,15 @@ class InterviewService:
         self._bind()
         if decision not in {"APPROVE", "REJECT"}:
             raise InterviewError(f"decision 非法：{decision}")
+        revoked = self._conn.execute(
+            """SELECT 1 FROM experience_drafts d
+                 JOIN interviews i ON i.tenant_id = d.tenant_id AND i.interview_id = d.interview_id
+                 JOIN interview_consents c ON c.tenant_id = i.tenant_id AND c.consent_id = i.consent_id
+                WHERE d.tenant_id = %s AND d.draft_id = %s AND c.revoked_at IS NOT NULL""",
+            (self._tenant, draft_id),
+        ).fetchone()
+        if revoked is not None:
+            raise InterviewError("授权已撤回，不能审核")
         row = self._conn.execute(
             """SELECT interview_id, status FROM experience_drafts
                 WHERE tenant_id = %s AND draft_id = %s""",
@@ -273,7 +324,9 @@ class InterviewService:
         return {"draft_id": str(draft_id), "status": status, "reviewer": reviewer}
 
     # ---- 查询 --------------------------------------------------------------
-    def view(self, interview_id: uuid.UUID) -> dict[str, Any]:
+    def view(
+        self, interview_id: uuid.UUID, *, viewer: str, allow_reviewer: bool = False
+    ) -> dict[str, Any]:
         self._bind()
         row = self._conn.execute(
             """SELECT interview_id, subject_id, status, interviewer, language, created_at
@@ -281,6 +334,9 @@ class InterviewService:
             (self._tenant, interview_id),
         ).fetchone()
         if row is None:
+            raise InterviewNotFound(str(interview_id))
+        if not allow_reviewer and str(row[1]) != viewer:
+            # 对象级权限：非本人需要审核权限才能读取
             raise InterviewNotFound(str(interview_id))
         drafts = self._conn.execute(
             """SELECT draft_id, status, claim, evidence_spans
@@ -310,6 +366,17 @@ class InterviewService:
                 for d in drafts
             ],
         }
+
+
+    def _consent_revoked(self, interview_id: uuid.UUID) -> bool:
+        row = self._conn.execute(
+            """SELECT c.revoked_at FROM interviews i
+                 JOIN interview_consents c
+                   ON c.tenant_id = i.tenant_id AND c.consent_id = i.consent_id
+                WHERE i.tenant_id = %s AND i.interview_id = %s""",
+            (self._tenant, interview_id),
+        ).fetchone()
+        return row is not None and row[0] is not None
 
 
 def _segments(content: str) -> list[dict[str, Any]]:

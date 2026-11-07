@@ -92,6 +92,8 @@ def grant_consent(
             subject_id=payload.subject_id,
             method=payload.method,
             retention_days=payload.retention_days,
+            # 授权人取自令牌，不接受请求体自证（L1 2026-11-08）
+            authenticated_subject=context.subject,
             receipt_uri=payload.receipt_uri,
         )
     except InterviewError as exc:
@@ -137,7 +139,10 @@ def add_transcript(
     service = InterviewService(conn, context.tenant_id)
     try:
         transcript_id = service.add_transcript(
-            _uuid(interview_id, "interview_id"), content=payload.content, kind=payload.kind
+            _uuid(interview_id, "interview_id"),
+            content=payload.content,
+            actor=context.subject,
+            kind=payload.kind,
         )
     except (InterviewNotFound, InterviewError) as exc:
         raise _translate(exc) from exc
@@ -149,7 +154,7 @@ def build_draft(interview_id: str, context: PrincipalDep, conn: ConnDep) -> dict
     context.require_scope("interview.create")
     service = InterviewService(conn, context.tenant_id)
     try:
-        draft_id = service.build_draft(_uuid(interview_id, "interview_id"))
+        draft_id = service.build_draft(_uuid(interview_id, "interview_id"), actor=context.subject)
     except (InterviewNotFound, InterviewError) as exc:
         raise _translate(exc) from exc
     return {"draft_id": str(draft_id)}
@@ -177,7 +182,13 @@ def view_interview(interview_id: str, context: PrincipalDep, conn: ConnDep) -> d
     context.require_scope("interview.read")
     service = InterviewService(conn, context.tenant_id)
     try:
-        return service.view(_uuid(interview_id, "interview_id"))
+        # 本人可读；其他人需要 interview.review 才能读（对象级权限）
+        allow_reviewer = "interview.review" in context.scopes
+        return service.view(
+            _uuid(interview_id, "interview_id"),
+            viewer=context.subject,
+            allow_reviewer=allow_reviewer,
+        )
     except (InterviewNotFound, InterviewError) as exc:
         raise _translate(exc) from exc
 

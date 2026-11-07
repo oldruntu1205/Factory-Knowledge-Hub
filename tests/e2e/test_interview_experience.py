@@ -88,9 +88,17 @@ def crew(admin: psycopg.Connection[Any]) -> dict[str, Any]:
     outsider = create_principal(admin, tenant, f"out-{uuid.uuid4().hex[:6]}@example.test")
     admin.commit()
     subject = f"worker-{uuid.uuid4().hex[:6]}"
+    worker_principal = create_principal(admin, tenant, f"{subject}@example.test")
+    admin.commit()
     return {
         "tenant": tenant,
         "subject": subject,
+        # 本人令牌：sub 与 subject 一致，只有本人能授权与建访谈（L1 2026-11-08）
+        "worker": _token(tenant, worker_principal,
+                         scopes=("interview.create", "interview.read", "knowledge.search",
+                                 "knowledge.answer"),
+                         allowed=("internal_product", "internal_training"), subject=subject),
+        "worker_subject": subject,
         "collector": _token(tenant, collector,
                             scopes=("interview.create", "interview.read", "knowledge.search",
                                     "knowledge.answer"),
@@ -116,10 +124,23 @@ def _consent(client: TestClient, crew: dict[str, Any], subject: str | None = Non
             "retention_days": 90,
             "receipt_uri": "consent://notice-v1",
         },
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert response.status_code == 201, response.text
     return response.json()["consent_id"]
+
+
+def test_collector_cannot_use_workers_consent(
+    client: TestClient, crew: dict[str, Any]
+) -> None:
+    """L1 2026-11-08：持有 interview.create 不等于可以使用任意人的授权。"""
+    consent_id = _consent(client, crew)
+    intrude = client.post(
+        "/v1/interviews",
+        json={"subject_id": crew["subject"], "consent_id": consent_id},
+        headers=_h(crew["collector"]),
+    )
+    assert intrude.status_code == 409, intrude.text
 
 
 def test_interview_requires_valid_consent(client: TestClient, crew: dict[str, Any]) -> None:
@@ -128,7 +149,7 @@ def test_interview_requires_valid_consent(client: TestClient, crew: dict[str, An
     mismatch = client.post(
         "/v1/interviews",
         json={"subject_id": crew["other_subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert mismatch.status_code == 409, mismatch.text
 
@@ -136,7 +157,7 @@ def test_interview_requires_valid_consent(client: TestClient, crew: dict[str, An
     missing = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": str(uuid.uuid4())},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert missing.status_code == 403, missing.text
 
@@ -149,7 +170,7 @@ def test_transcript_is_raw_and_invisible_to_retrieval(
     interview = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert interview.status_code == 201, interview.text
     interview_id = interview.json()["interview_id"]
@@ -157,7 +178,7 @@ def test_transcript_is_raw_and_invisible_to_retrieval(
     transcript = client.post(
         f"/v1/interviews/{interview_id}/transcript",
         json={"content": TRANSCRIPT, "kind": "MACHINE"},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert transcript.status_code == 201, transcript.text
 
@@ -166,7 +187,7 @@ def test_transcript_is_raw_and_invisible_to_retrieval(
         "/v1/knowledge/search",
         json={"query": "砂轮不平会出现橘皮纹", "knowledge_scope": "internal_product",
               "max_results": 5},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert search.status_code == 200, search.text
     assert search.json()["results"] == [], "转写不得进入检索索引"
@@ -176,7 +197,7 @@ def test_transcript_is_raw_and_invisible_to_retrieval(
         "/v1/knowledge/answer",
         json={"query": "砂轮不平会出现橘皮纹吗？", "knowledge_scope": "internal_product",
               "language": "zh-CN", "max_evidence": 5},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert answer.status_code == 200, answer.text
     assert answer.json()["status"] != "ANSWERED", answer.json()
@@ -189,16 +210,16 @@ def test_draft_carries_timestamps_and_requires_human_review(
     interview_id = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     ).json()["interview_id"]
     client.post(f"/v1/interviews/{interview_id}/transcript",
-                json={"content": TRANSCRIPT}, headers=_h(crew["collector"]))
+                json={"content": TRANSCRIPT}, headers=_h(crew["worker"]))
 
-    draft = client.post(f"/v1/interviews/{interview_id}/drafts", headers=_h(crew["collector"]))
+    draft = client.post(f"/v1/interviews/{interview_id}/drafts", headers=_h(crew["worker"]))
     assert draft.status_code == 201, draft.text
     draft_id = draft.json()["draft_id"]
 
-    view = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["collector"]))
+    view = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["worker"]))
     assert view.status_code == 200, view.text
     body = view.json()
     assert body["status"] == "DRAFT_READY"
@@ -211,7 +232,7 @@ def test_draft_carries_timestamps_and_requires_human_review(
     denied = client.post(
         f"/v1/interviews/drafts/{draft_id}/review",
         json={"decision": "APPROVE"},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert denied.status_code == 403, denied.text
 
@@ -232,33 +253,38 @@ def test_withdraw_consent_removes_transcript_and_drafts(
     interview_id = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     ).json()["interview_id"]
     client.post(f"/v1/interviews/{interview_id}/transcript",
-                json={"content": TRANSCRIPT}, headers=_h(crew["collector"]))
-    client.post(f"/v1/interviews/{interview_id}/drafts", headers=_h(crew["collector"]))
+                json={"content": TRANSCRIPT}, headers=_h(crew["worker"]))
+    client.post(f"/v1/interviews/{interview_id}/drafts", headers=_h(crew["worker"]))
 
     revoked = client.post(
         f"/v1/interviews/consents/{consent_id}/revoke",
         json={"reason": "受访者要求撤回"},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert revoked.status_code == 200, revoked.text
     assert revoked.json()["transcripts_deleted"] == 1
     assert revoked.json()["drafts_withdrawn"] == 1
 
-    after = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["collector"]))
+    after = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["worker"]))
     assert after.status_code == 200, after.text
     body = after.json()
     assert body["status"] == "WITHDRAWN"
     assert body["transcripts"] == 0
     assert body["drafts"][0]["status"] == "WITHDRAWN"
+    # 撤回后不得保留承载原文的字段（L1 2026-11-08）
+    assert body["drafts"][0]["claim"] == ""
+    for span in body["drafts"][0]["evidence_spans"]:
+        assert "quote" not in span, span
+        assert "start_ms" in span
 
     # 撤回后不能再用该授权建访谈
     again = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     )
     assert again.status_code == 409, again.text
 
@@ -268,12 +294,12 @@ def test_outsider_cannot_read_interview(client: TestClient, crew: dict[str, Any]
     interview_id = client.post(
         "/v1/interviews",
         json={"subject_id": crew["subject"], "consent_id": consent_id},
-        headers=_h(crew["collector"]),
+        headers=_h(crew["worker"]),
     ).json()["interview_id"]
 
     # 同租户但无 interview.read？该令牌有 read；用不存在的 id 验证"同码 403"
-    missing = client.get(f"/v1/interviews/{uuid.uuid4()}", headers=_h(crew["collector"]))
+    missing = client.get(f"/v1/interviews/{uuid.uuid4()}", headers=_h(crew["worker"]))
     assert missing.status_code == 403, missing.text
 
-    ok = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["outsider"]))
-    assert ok.status_code == 200, "同租户有 read 权限即可读（数据范围由 scope 控制）"
+    stakeholder = client.get(f"/v1/interviews/{interview_id}", headers=_h(crew["outsider"]))
+    assert stakeholder.status_code == 403, "非本人且无 review 权限不得读取访谈"
