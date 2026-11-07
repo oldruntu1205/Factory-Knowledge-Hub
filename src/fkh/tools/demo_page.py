@@ -145,7 +145,16 @@ async function ask() {
 }
 
 function render(q, body, status) {
-  const st = body.status || ("HTTP " + status);
+  const st = body.status || (body.error?.code || ("HTTP " + status));
+  if (body.error) {
+    document.getElementById("out").innerHTML =
+      '<div class="card"><h2>问题</h2><div class="answer">' + esc(q) + '</div></div>' +
+      '<div class="card"><h2>回答</h2><span class="badge b-HUMAN_REVIEW_REQUIRED">' +
+      esc(st) + '</span><div class="meta">' + esc(body.error.message || "") +
+      '（trace ' + esc(body.error.trace_id || "-").slice(0, 8) + '）</div>' +
+      '<div class="meta">这是能力故障，不是"知识不足"的拒答；恢复推理服务后重试即可。</div></div>';
+    return;
+  }
   let html = '<div class="card"><h2>问题</h2><div class="answer">' + esc(q) + '</div></div>';
   html += '<div class="card"><h2>回答</h2>';
   html += '<span class="badge b-' + esc(st) + '">' + esc(st) + '</span>';

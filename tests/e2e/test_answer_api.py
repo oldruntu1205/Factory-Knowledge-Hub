@@ -468,3 +468,24 @@ def test_explicit_none_with_valid_inline_still_answers(
     body = _ask(client, seeded["token"]).json()
     assert body["status"] == "ANSWERED"
     assert [c["evidence_id"] for c in body["citations"]] == [seeded["chunk"]]
+
+
+def test_generator_construction_failure_is_503_not_500(
+    client: TestClient, admin: psycopg.Connection[Any], tenant: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本地推理不可达发生在**构造期**（OllamaGenerator 探测 /api/tags）时，也必须 503。
+
+    这条 bug 是实测撞出来的：模型没起来时接口回 500，看起来像服务端 bug，
+    与 SPEC「能力故障 = 503 + ERROR 审计」相反。
+    """
+    seeded = _seed(admin, tenant)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise GenerationError("本地推理不可达：连接被拒绝")
+
+    monkeypatch.setattr("fkh.api.main.get_generator", boom)
+
+    response = _ask(client, seeded["token"])
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"

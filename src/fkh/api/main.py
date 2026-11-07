@@ -108,8 +108,10 @@ def _answer(
             model=settings.llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
         )
-    except GenerationNotConfigured as exc:
-        # 非 loopback / 模型不存在 / provider 非法：在进入业务前就失败
+    except (GenerationNotConfigured, GenerationError) as exc:
+        # 非 loopback / 模型不存在 / provider 非法 / 本地推理不可达 都在这里失败。
+        # 构造期探测失败抛的是 GenerationError，若不捕获会变成 500——
+        # 而 SPEC 明确"能力故障是 503 + ERROR 审计"，不能伪装成服务端 bug。
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     # 数据库连接按需获取（而不是做成依赖）：依赖会在调用端点前解析，
