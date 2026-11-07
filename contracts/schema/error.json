@@ -25,6 +25,7 @@
             "ACCESS_DENIED",
             "VALIDATION_ERROR",
             "NOT_FOUND",
+            "PAYLOAD_TOO_LARGE",
             "NOT_IMPLEMENTED",
             "SERVICE_UNAVAILABLE",
             "VERSION_CONFLICT",

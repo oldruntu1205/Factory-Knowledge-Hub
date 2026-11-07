@@ -20,6 +20,7 @@ class ErrorCode(StrEnum):
     ACCESS_DENIED = "ACCESS_DENIED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     NOT_FOUND = "NOT_FOUND"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     VERSION_CONFLICT = "VERSION_CONFLICT"
     RATE_LIMITED = "RATE_LIMITED"
@@ -33,6 +34,7 @@ _ERROR_TABLE: dict[ErrorCode, tuple[int, str]] = {
     ErrorCode.ACCESS_DENIED: (403, "Request cannot be fulfilled"),
     ErrorCode.VALIDATION_ERROR: (422, "Request payload is invalid"),
     ErrorCode.NOT_FOUND: (404, "Resource not found"),
+    ErrorCode.PAYLOAD_TOO_LARGE: (413, "Payload too large"),
     ErrorCode.NOT_IMPLEMENTED: (501, "Endpoint is not implemented in this phase"),
     ErrorCode.VERSION_CONFLICT: (409, "Resource version conflict"),
     ErrorCode.RATE_LIMITED: (429, "Too many requests"),

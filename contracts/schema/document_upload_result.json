@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/document_upload_result.json",
+  "title": "DocumentUploadResult",
+  "description": "POST /v1/knowledge/documents 的 201 响应：入库固定为 DRAFT（不可被检索），必须走既有审批路径才可用。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document_id",
+    "version_id",
+    "version_no",
+    "status",
+    "parent_chunks",
+    "child_chunks",
+    "needs_human_review",
+    "warnings"
+  ],
+  "properties": {
+    "document_id": { "type": "string" },
+    "version_id": { "type": "string" },
+    "version_no": { "type": "integer", "minimum": 1 },
+    "status": { "type": "string", "enum": ["DRAFT"] },
+    "parent_chunks": { "type": "integer", "minimum": 0 },
+    "child_chunks": { "type": "integer", "minimum": 0 },
+    "needs_human_review": { "type": "boolean" },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

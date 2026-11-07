@@ -148,6 +148,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "501": { $ref: "#/components/responses/NotImplemented" }
 
+  # 注意：旧路径参数名为 knowledge_id，但**实际接收 version_id**（历史命名，本片不改）
   /v1/knowledge/{knowledge_id}/review:
     post:
       tags: [knowledge]
@@ -682,6 +683,106 @@ paths:
               schema: {$ref: "../schema/error.json"}
         "422": {$ref: "#/components/responses/ValidationError"}
 
+  /v1/knowledge/documents:
+    post:
+      tags: [knowledge]
+      summary: 上传文档并入库（初始 DRAFT）
+      description: >-
+        需要 `knowledge.ingest`，并单独校验数据范围（`required_scope` 必须在令牌 allowed_scopes 内）。
+        请求的 ACL 必须允许调用者本人（不能创建自己读不到的内容）。
+        传输为 JSON + base64：解码后正文 ≤ 5 MiB，HTTP 请求体上限 8 MiB（超出 413 `PAYLOAD_TOO_LARGE`），
+        base64 非法或正文为空 422。`knowledge_key` 在同租户内唯一，重复 → 409（不覆盖、不新建版本；
+        首次成功但响应丢失后重试同样 409，本接口不提供"重试返回原结果"的幂等语义）。
+        入库状态固定为 `DRAFT`，请求不能指定初始状态，也不能跳过审核；
+        `product_catalog` 域仍会触发目录抽取，抽取警告通过 `warnings` 返回。
+        失败不留半成品（文档/版本/切片/ACL/目录条目/冲突待办同事务）。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [filename, title, domain, owner_department, required_scope, knowledge_key, content_base64]
+              properties:
+                filename: {type: string, minLength: 1, maxLength: 200}
+                title: {type: string, minLength: 1, maxLength: 200}
+                domain:
+                  type: string
+                  enum: [owner_experience, glass_materials, production_process, product_catalog,
+                         quality, equipment_safety, foreign_trade, training]
+                owner_department: {type: string, minLength: 1, maxLength: 100}
+                classification: {type: integer, minimum: 0, maximum: 4, default: 2}
+                audience: {type: string, enum: [internal, customer_public], default: internal}
+                required_scope:
+                  type: string
+                  enum: [internal_product, internal_training, customer_public]
+                acl_allow_roles: {type: array, items: {type: string}, maxItems: 20}
+                acl_deny_roles: {type: array, items: {type: string}, maxItems: 20}
+                knowledge_key: {type: string, minLength: 1, maxLength: 120}
+                content_base64: {type: string, minLength: 1}
+                catalog_currency: {type: [string, "null"]}
+                language: {type: string, default: zh-CN}
+      responses:
+        "201":
+          description: 已入库（DRAFT）
+          content:
+            application/json:
+              schema:
+                $ref: "../schema/document_upload_result.json"
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409":
+          description: knowledge_key 重复（不覆盖、不新建版本）
+          content:
+            application/json:
+              schema: {$ref: "../schema/error.json"}
+        "413":
+          description: 正文或请求体超限
+          content:
+            application/json:
+              schema: {$ref: "../schema/error.json"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+    get:
+      tags: [knowledge]
+      summary: 文档列表（审核用，含未检索状态）
+      description: >-
+        需要 `knowledge.read`（**文档管理元数据读取**，不授予正文/切片/检索权限）。
+        顺序固定：限定租户 → 取每个文档的最新版本 → 校验数据范围并应用 status/domain 过滤 → 排序分页。
+        最新版本不可见或状态不匹配时**整条文档消失，不回退旧版本**。
+        `classification` / `audience` 等既有硬边界不因该接口而放宽。
+        `offset` 只保证静态数据下稳定，不承诺并发更新时跨页快照一致。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [RAW, DRAFT, REVIEWED, APPROVED_INTERNAL, PUBLISHED_PUBLIC, SUPERSEDED, REVOKED, DISCARDED]
+        - name: domain
+          in: query
+          schema:
+            type: string
+            enum: [owner_experience, glass_materials, production_process, product_catalog,
+                   quality, equipment_safety, foreign_trade, training]
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: 最新版本列表
+          content:
+            application/json:
+              schema:
+                $ref: "../schema/document_list.json"
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
 components:
   schemas:
     EvidenceResponse:
@@ -692,6 +793,10 @@ components:
       $ref: "../schema/catalog_conflict_list.json"
     CatalogConflictGroup:
       $ref: "../schema/catalog_conflict_group.json"
+    DocumentList:
+      $ref: "../schema/document_list.json"
+    DocumentUploadResult:
+      $ref: "../schema/document_upload_result.json"
   securitySchemes:
     bearerAuth:
       type: http
