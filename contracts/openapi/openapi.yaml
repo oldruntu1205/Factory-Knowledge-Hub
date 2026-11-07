@@ -783,6 +783,49 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "422": {$ref: "#/components/responses/ValidationError"}
 
+  /v1/training/assignments/{assignment_id}/content:
+    get:
+      tags: [training]
+      summary: 读取课程正文本（分页）
+      description: >-
+        需要 `learner`，且任务必须属于令牌主体（他人任务与不存在任务同码 403）。
+        可见性是**交集**：课程 PUBLISHED、版本属于该课程源、内部身份、audience=internal、
+        status=APPROVED_INTERNAL、required_scope 被 allowed_scopes 覆盖、块 ACL 允许；
+        父块仅在其**全部子块**均通过 ACL 时返回全文。
+        源版本一旦进入禁止状态（撤销/弃用/待复核），整个请求 409，不返回残缺课程；
+        分级 C3+ 暂无学员授权口径，同样整课 409。
+        `cursor` 为服务端签名（HMAC），绑定租户/主体/任务/课程修订与位置，
+        篡改、跨主体或跨任务复用、过期均返回 409；每页重新校验，旧游标不保留撤销前的读取资格。
+        每次成功读取落一条审计（主体、任务、课程修订、返回的版本与块），不记正文与游标。
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: assignment_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: cursor
+          in: query
+          required: false
+          schema: {type: string}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 20, default: 5}
+      responses:
+        "200":
+          description: 当前页的正文本
+          content:
+            application/json:
+              schema: {$ref: "../schema/training_content.json"}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409":
+          description: 课程/源版本不可用，或游标不可信
+          content:
+            application/json:
+              schema: {$ref: "../schema/error.json"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
 components:
   schemas:
     EvidenceResponse:
@@ -797,6 +840,8 @@ components:
       $ref: "../schema/document_list.json"
     DocumentUploadResult:
       $ref: "../schema/document_upload_result.json"
+    TrainingContentPage:
+      $ref: "../schema/training_content.json"
   securitySchemes:
     bearerAuth:
       type: http

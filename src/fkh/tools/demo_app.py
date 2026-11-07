@@ -33,8 +33,23 @@ from fkh.tools.conflict_page import CONFLICTS_PAGE
 from fkh.tools.demo_page import PAGE
 from fkh.tools.documents_page import DOCUMENTS_PAGE
 from fkh.tools.evidence_client import EVIDENCE_JS
+from fkh.tools.training_page import TRAINING_PAGE
 
 DEMO_TENANT_NAME = "三爱思演示"
+
+_TRAINING_TEXT = """冷凝管安装与检验（培训材料）
+
+一、安装
+将冷凝管竖直固定在铁架台上，下端进水口接自来水，上端出水口接排水管。
+水流方向必须与蒸汽方向相反，否则冷凝效率显著下降。
+
+二、气密性检验
+两端封堵后充气至 0.2MPa，保压 60 秒；压力下降不超过 5% 为合格。
+不合格品转入返修区，返修后须重做全部三项检验。
+
+三、安全
+通水后再加热，停热后继续通水 5 分钟再关水；避免骤冷骤热导致玻璃炸裂。
+"""
 
 
 def _pg_bin() -> Path:
@@ -196,6 +211,72 @@ def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
             review.approve_internal(result.version_id, uuid.UUID(str(principal)))
             conn.commit()
 
+        # 培训链路演示数据：文件 → 课程 → 分配给演示主体（幂等）
+        from fkh.domain.training import TrainingService
+
+        training = TrainingService(conn, uuid.UUID(str(tenant)))
+        existing_course = conn.execute(
+            "SELECT course_id FROM training_courses WHERE tenant_id = %s AND title = %s",
+            (tenant, "冷凝管安装与检验（演示）"),
+        ).fetchone()
+        if existing_course is None:
+            content = _TRAINING_TEXT.encode()
+            doc = conn.execute(
+                "SELECT id FROM knowledge_documents WHERE tenant_id = %s AND knowledge_key = %s",
+                (tenant, "demo-training-qual"),
+            ).fetchone()
+            if doc is None:
+                result = ingest_document(
+                    conn,
+                    uuid.UUID(str(tenant)),
+                    IngestionRequest(
+                        source_id="demo-training-qual",
+                        filename="training.md",
+                        content=content,
+                        knowledge_key="demo-training-qual",
+                        title="冷凝管安装与检验（培训）",
+                        domain="training",
+                        owner_department="hr",
+                        classification=1,
+                        audience="internal",
+                        required_scope="internal_training",
+                        acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}, "deny": {}}),
+                        actor_id=uuid.UUID(str(principal)),
+                    ),
+                )
+                review = ReviewService(conn, uuid.UUID(str(tenant)))
+                review.pass_review(result.version_id, uuid.UUID(str(principal)))
+                review.approve_internal(result.version_id, uuid.UUID(str(principal)))
+                conn.commit()
+                version_id = result.version_id
+            else:
+                latest = conn.execute(
+                    "SELECT id FROM knowledge_versions WHERE tenant_id = %s AND document_id = %s"
+                    " ORDER BY version_no DESC LIMIT 1",
+                    (tenant, doc[0]),
+                ).fetchone()
+                assert latest is not None
+                version_id = latest[0]
+            role_id = training.ensure_role("installer", "安装工")
+            course_id = training.create_course(role_id=role_id, title="冷凝管安装与检验（演示）")
+            training.add_source(course_id, version_id)
+            training.create_question(
+                course_id=course_id,
+                course_version=1,
+                question_type="SINGLE_CHOICE",
+                prompt="气密性测试的保压时间是多少？",
+                answer_key={"correct": "60 秒"},
+                evidence_refs=[],
+                status="APPROVED",
+            )
+            training.publish_course(course_id)
+            # 学员身份取**令牌 sub**（与 _issue_token 的构造一致），否则学员看不到任务
+            training.assign(
+                course_id=course_id,
+                learner_subject_id=f"{str(principal)[:8]}@demo.local",
+            )
+            conn.commit()
+
         stats = {
             "tenant": str(tenant),
             "principal": str(principal),
@@ -230,7 +311,7 @@ _SCOPES = {
     "internal": [
         "knowledge.answer", "knowledge.search", "catalog.read", "catalog.resolve",
         "evidence.read", "knowledge.ingest", "knowledge.read", "knowledge.review",
-        "knowledge.publish", "knowledge.revoke",
+        "knowledge.publish", "knowledge.revoke", "learner",
     ],
     # 客户视角：只能问答/检索/看证据，且数据范围只有 customer_public
     "customer": ["knowledge.answer", "knowledge.search", "evidence.read"],
@@ -239,7 +320,7 @@ _SCOPES = {
 _ALLOWED = {
     # 内部运营同时具备内部与对外两类数据范围：他们负责上传/审核对外内容；
     # 反过来客户令牌只有 customer_public，这才是隔离要演示的方向。
-    "internal": ["internal_product", "customer_public"],
+    "internal": ["internal_product", "customer_public", "internal_training"],
     "customer": ["customer_public"],
     "publisher": ["internal_product", "customer_public"],
 }
@@ -304,6 +385,18 @@ class DemoHandler(BaseHTTPRequestHandler):
             query = f"?{parsed.query}" if parsed.query else ""
             self._proxy("GET", f"/v1/catalog/conflicts{query}", None)
             return
+        if path == "/api/training/assignments":
+            self._proxy("GET", "/v1/training/me/assignments", None)
+            return
+        if path.startswith("/api/training/assignments/"):
+            rest = path.removeprefix("/api/training/assignments/")
+            assignment_id, _, action = rest.partition("/")
+            if action == "content":
+                query = f"?{parsed.query}" if parsed.query else ""
+                self._proxy(
+                    "GET", f"/v1/training/assignments/{assignment_id}/content{query}", None
+                )
+                return
         if path == "/api/documents":
             query = f"?{parsed.query}" if parsed.query else ""
             self._proxy("GET", f"/v1/knowledge/documents{query}", None)
@@ -317,6 +410,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         if path in ("/conflicts", "/conflicts/"):
             self._send(200, CONFLICTS_PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if path in ("/training", "/training/"):
+            self._send(200, TRAINING_PAGE.encode(), "text/html; charset=utf-8")
             return
         if path in ("/documents", "/documents/"):
             self._send(200, DOCUMENTS_PAGE.encode(), "text/html; charset=utf-8")
@@ -366,6 +462,11 @@ class DemoHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/training/ask":
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length) if length else b"{}"
+            self._proxy("POST", "/v1/training/ask", payload)
+            return
         if parsed.path == "/api/documents":
             length = int(self.headers.get("Content-Length") or 0)
             payload = self.rfile.read(length) if length else b"{}"

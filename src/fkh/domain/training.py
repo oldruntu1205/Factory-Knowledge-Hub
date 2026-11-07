@@ -21,6 +21,8 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from fkh.domain.chunking.tokenize import ApproxCjkTokenCounter
+
 OBJECTIVE_TYPES = frozenset({"SINGLE_CHOICE", "MULTI_CHOICE", "TRUE_FALSE"})
 SUBJECTIVE_TYPES = frozenset({"SHORT_ANSWER"})
 
@@ -537,6 +539,246 @@ class TrainingService:
             "assignment_status": status,
             "signed_at": None,
         }
+
+    # ---- 正文读取（2026-11-07 L1 条件通过） --------------------------------
+    def content_page(
+        self,
+        *,
+        assignment_id: uuid.UUID,
+        learner_subject_id: str,
+        cursor: str | None,
+        limit: int,
+        cursor_key: str,
+        trace_id: str,
+        viewer_allowed_scopes: frozenset[str],
+        viewer_is_external: bool,
+        viewer_principal_id: uuid.UUID,
+        viewer_subject: Any,
+    ) -> dict[str, Any]:
+        """按课程源返回**批准的培训正文父块**（分页）。
+
+        可见性是**交集**，缺一即拒（L1 2026-11-07）：
+        任务属于本人 ∧ 课程 PUBLISHED ∧ 版本属于该课程源 ∧ 内部身份 ∧
+        audience=internal ∧ status=APPROVED_INTERNAL ∧ required_scope 被覆盖 ∧ 块 ACL 允许。
+
+        源版本一旦进入禁止状态（撤销/弃用/待复核），**整个请求 409**，不返回残缺课程；
+        每页都重新校验，旧 cursor 不保留撤销前的读取资格。
+        """
+        from fkh.authz.policy import AclPolicy, Decision, evaluate
+        from fkh.domain.training_cursor import CursorError, CursorState, decode_cursor, encode_cursor
+
+        if limit < 1 or limit > 20:
+            raise TrainingError("limit 必须在 1–20 之间")
+
+        self._bind()
+        row = self._conn.execute(
+            """SELECT a.course_id, c.status, c.version, c.title
+                 FROM training_assignments a
+                 JOIN training_courses c
+                   ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
+                WHERE a.tenant_id = %s AND a.assignment_id = %s
+                  AND a.learner_subject_id = %s""",
+            (self._tenant, assignment_id, learner_subject_id),
+        ).fetchone()
+        if row is None:
+            raise CourseNotFound(str(assignment_id))
+        course_id, course_status, course_version, course_title = (
+            uuid.UUID(str(row[0])),
+            str(row[1]),
+            int(row[2]),
+            str(row[3]),
+        )
+        if course_status != "PUBLISHED":
+            raise TrainingError(f"课程当前不可用（{course_status}），正文读取暂停")
+
+        sources = self._conn.execute(
+            """SELECT s.knowledge_version_id, v.title, v.version_no, v.status, v.audience,
+                      v.required_scope, v.classification
+                 FROM training_course_sources s
+                 JOIN knowledge_versions v
+                   ON v.tenant_id = s.tenant_id AND v.id = s.knowledge_version_id
+                WHERE s.tenant_id = %s AND s.course_id = %s
+                ORDER BY s.knowledge_version_id""",
+            (self._tenant, course_id),
+        ).fetchall()
+
+        # 源版本整体状态：任一不可用 → 整课 409（不返回残缺课程）
+        for source in sources:
+            status = str(source[3])
+            if status != "APPROVED_INTERNAL":
+                raise TrainingError(f"课程源版本状态为 {status}，正文不可读")
+            if str(source[4]) != "internal":
+                raise TrainingError("课程源受众不是内部，不能作为培训正文")
+            if str(source[5]) != "internal_training":
+                raise TrainingError("课程源数据范围不是 internal_training")
+            if str(source[5]) not in viewer_allowed_scopes:
+                raise TrainingError(f"缺少数据范围 {source[5]}")
+            if int(source[6]) >= 3:
+                # L1：不许默认放行尚无授权口径的 C3+
+                raise TrainingError(f"分级 C{int(source[6])} 暂无学员授权口径")
+
+        if viewer_is_external:
+            raise TrainingError("外部身份不可读取培训正文")
+
+        # 游标：绑定租户/主体/任务/课程修订
+        start_source = start_block = 0
+        if cursor:
+            try:
+                state = decode_cursor(cursor_key, cursor)
+            except CursorError as exc:
+                raise TrainingError(f"游标不可用：{exc}") from exc
+            if (
+                state.tenant_id != str(self._tenant)
+                or state.assignment_id != str(assignment_id)
+                or state.subject_id != learner_subject_id
+                or state.course_version != course_version
+            ):
+                raise TrainingError("游标与当前任务/修订不匹配")
+            start_source, start_block = state.source_ordinal, state.block_ordinal
+
+        subject = viewer_subject  # 用真实主体（roles/groups/departments）做 ACL 判定
+        flat: list[tuple[int, int, dict[str, Any]]] = []
+        for source_index, source in enumerate(sources):
+            version_id = uuid.UUID(str(source[0]))
+            blocks = self._visible_parent_blocks(version_id, subject, evaluate, AclPolicy, Decision)
+            for block_index, block in enumerate(blocks):
+                flat.append((source_index, block_index, block))
+
+        start = 0
+        if cursor:
+            for position, (source_ordinal, block_ordinal, _block) in enumerate(flat):
+                if (source_ordinal, block_ordinal) == (start_source, start_block):
+                    start = position
+                    break
+            else:
+                start = len(flat)  # 位置已不存在（正文被改）→ 从空页开始，不猜
+        page = flat[start : start + limit]
+
+        grouped: dict[int, dict[str, Any]] = {}
+        for source_ordinal, _block_ordinal, block in page:
+            source = sources[source_ordinal]
+            entry = grouped.setdefault(
+                source_ordinal,
+                {
+                    "version_id": str(source[0]),
+                    "title": str(source[1]),
+                    "version_no": int(source[2]),
+                    "status": str(source[3]),
+                    "blocks": [],
+                },
+            )
+            entry["blocks"].append(block)
+
+        next_cursor = None
+        if page:
+            last_source, last_block, _ = page[-1]
+            if start + len(page) < len(flat):
+                next_cursor = encode_cursor(
+                    cursor_key,
+                    CursorState(
+                        tenant_id=str(self._tenant),
+                        subject_id=learner_subject_id,
+                        assignment_id=str(assignment_id),
+                        course_version=course_version,
+                        source_ordinal=last_source,
+                        block_ordinal=last_block + 1,
+                    ),
+                )
+
+        returned_chunk_ids = [block["chunk_id"] for _s, _b, block in page]
+        returned_version_ids = sorted({str(sources[s][0]) for s, _b, _blk in page})
+
+        self._conn.execute(
+            """INSERT INTO training_content_access_log
+                 (tenant_id, principal_id, subject_id, assignment_id, course_id, course_version,
+                  version_ids, chunk_ids, trace_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                self._tenant,
+                viewer_principal_id,
+                learner_subject_id,
+                assignment_id,
+                course_id,
+                course_version,
+                [uuid.UUID(v) for v in returned_version_ids],
+                [uuid.UUID(c) for c in returned_chunk_ids],
+                trace_id,
+            ),
+        )
+
+        return {
+            "assignment_id": str(assignment_id),
+            "course_id": str(course_id),
+            "course_title": course_title,
+            "course_version": course_version,
+            "sources": [grouped[key] for key in sorted(grouped)],
+            "next_cursor": next_cursor,
+        }
+
+    def _visible_parent_blocks(
+        self,
+        version_id: uuid.UUID,
+        subject: Any,
+        evaluate: Any,
+        AclPolicy: Any,
+        Decision: Any,
+    ) -> list[dict[str, Any]]:
+        """父块 + 其下全部子块都必须通过 ACL，才返回父块全文（防止用父块绕过行级 ACL）。"""
+        rows = self._conn.execute(
+            """SELECT c.id, c.parent_chunk_id, c.chunk_text, c.heading_path, c.locator,
+                      c.acl_policy_id, c.chunk_kind, c.tokenizer_id,
+                      NULL::int AS _unused
+                 FROM knowledge_chunks c
+                WHERE c.tenant_id = %s AND c.version_id = %s
+                ORDER BY (c.locator->>'block_index')::int NULLS LAST, c.id""",
+            (self._tenant, version_id),
+        ).fetchall()
+
+        policies: dict[uuid.UUID, Any] = {}
+        for row in rows:
+            acl_id = row[5]
+            if acl_id is not None and uuid.UUID(str(acl_id)) not in policies:
+                fetched = self._conn.execute(
+                    "SELECT policy_json FROM acl_policies WHERE tenant_id = %s AND id = %s",
+                    (self._tenant, acl_id),
+                ).fetchone()
+                payload = fetched[0] if fetched else None
+                try:
+                    policies[uuid.UUID(str(acl_id))] = (
+                        AclPolicy.from_json(payload) if payload is not None else None
+                    )
+                except Exception:  # noqa: BLE001 - 策略损坏按无策略处理（拒绝）
+                    policies[uuid.UUID(str(acl_id))] = None
+
+        def allowed(acl_id: Any) -> bool:
+            policy = policies.get(uuid.UUID(str(acl_id))) if acl_id is not None else None
+            decision, _reason = evaluate(policy, subject, resource_tenant_id=str(self._tenant))
+            return decision is Decision.ALLOW
+
+        roots = [row for row in rows if row[1] is None]
+        children_by_parent: dict[uuid.UUID, list[Any]] = {}
+        for row in rows:
+            if row[1] is not None:
+                children_by_parent.setdefault(uuid.UUID(str(row[1])), []).append(row)
+
+        blocks: list[dict[str, Any]] = []
+        for row in roots:
+            parent_id = uuid.UUID(str(row[0]))
+            if not allowed(row[5]):
+                continue
+            children = children_by_parent.get(parent_id, [])
+            if any(not allowed(child[5]) for child in children):
+                continue  # 有不可见子块 → 整个父块不返回
+            blocks.append(
+                {
+                    "chunk_id": str(parent_id),
+                    "heading_path": list(row[3]) if row[3] else [],
+                    "locator": dict(row[4]) if row[4] else None,
+                    "text": str(row[2]),
+                    "token_count": int(ApproxCjkTokenCounter().count(str(row[2]))),
+                }
+            )
+        return blocks
 
     # ---- 进度 --------------------------------------------------------------
     def progress(self, assignment_id: uuid.UUID, learner_subject_id: str) -> dict[str, Any]:

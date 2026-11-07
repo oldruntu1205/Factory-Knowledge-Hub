@@ -76,6 +76,7 @@ DOCUMENTS_PAGE = r"""<!doctype html>
     <a href="/">问答</a>
     <a href="/conflicts">冲突待办</a>
     <a href="/documents" class="active">文档审核</a>
+    <a href="/training">培训</a>
   </nav>
   <span class="tag">本地私域 · 127.0.0.1</span>
 </header>

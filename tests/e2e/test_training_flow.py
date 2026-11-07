@@ -359,3 +359,142 @@ def test_revoke_knowledge_disables_course_immediately(
         headers=_h(world["token_a"]),
     )
     assert attempt.status_code == 409, (attempt.status_code, attempt.text)
+
+
+def _content(client: TestClient, token: str, assignment_id: str, **params: Any) -> Any:
+    return client.get(
+        f"/v1/training/assignments/{assignment_id}/content",
+        params=params,
+        headers=_h(token),
+    )
+
+
+def test_content_returns_approved_blocks_with_audit(
+    client: TestClient, world: dict[str, Any], pg_url: str
+) -> None:
+    ctx = _setup_course(client, world)
+    response = _content(client, world["token_a"], ctx["assignment_a"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["course_id"] == ctx["course_id"]
+    assert body["sources"], body
+    assert body["sources"][0]["version_id"] == ctx["version_id"]
+    assert body["sources"][0]["blocks"], body
+    block = body["sources"][0]["blocks"][0]
+    assert block["text"].strip(), body
+    assert set(block) == {"chunk_id", "heading_path", "locator", "text", "token_count"}
+
+    with psycopg.connect(pg_url) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (world["tenant"],))
+        row = conn.execute(
+            "SELECT version_ids, chunk_ids FROM training_content_access_log"
+            " WHERE tenant_id = %s ORDER BY occurred_at DESC LIMIT 1",
+            (world["tenant"],),
+        ).fetchone()
+    assert row is not None, "读取正文必须落审计"
+    assert [str(v) for v in row[0]] == [ctx["version_id"]]
+    assert str(row[1][0]) == block["chunk_id"], "审计块集合必须与实际返回一致"
+
+
+def test_content_rejects_other_learners_assignment(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    response = _content(client, world["token_a"], ctx["assignment_b"])
+    assert response.status_code == 403, response.text
+
+
+def test_content_pagination_and_cursor_is_bound(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    first = _content(client, world["token_a"], ctx["assignment_a"], limit=1)
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert len(body["sources"][0]["blocks"]) == 1
+
+    cursor = body.get("next_cursor")
+    # 只有一个父块时没有下一页；用 limit=1 造出下一页需要多块，这里至少验证"无下一页=null"
+    if cursor is None:
+        assert body["sources"][0]["blocks"], body
+    else:
+        second = _content(client, world["token_a"], ctx["assignment_a"], limit=1, cursor=cursor)
+        assert second.status_code == 200, second.text
+
+    # 篡改游标
+    tampered = _content(
+        client, world["token_a"], ctx["assignment_a"], limit=1, cursor="AAAA.BBBB"
+    )
+    assert tampered.status_code == 409, tampered.text
+
+
+def test_content_revoked_source_returns_409(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    revoked = client.post(
+        f"/v1/knowledge/{ctx['version_id']}/revoke?reason=content-test",
+        headers=_h(world["admin_token"]),
+    )
+    assert revoked.status_code == 200, revoked.text
+    after = _content(client, world["token_a"], ctx["assignment_a"])
+    assert after.status_code == 409, after.text
+
+
+def test_content_c3_is_not_released_by_default(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    """分级 C3 暂无学员授权口径：整课读取被拒（L1 §4）。"""
+    body = {
+        "filename": "c3.md",
+        "title": "C3 培训材料",
+        "domain": "training",
+        "owner_department": "hr",
+        "classification": 3,
+        "audience": "internal",
+        "required_scope": "internal_training",
+        "acl_allow_roles": ["staff"],
+        "knowledge_key": f"c3-{uuid.uuid4().hex[:6]}",
+        "content_base64": base64.b64encode(TRAINING_DOC.encode()).decode(),
+    }
+    uploaded = client.post(
+        "/v1/knowledge/documents", json=body, headers=_h(world["admin_token"])
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    version_id = uploaded.json()["version_id"]
+    client.post(
+        f"/v1/knowledge/{version_id}/review",
+        json={"decision": "PASS"},
+        headers=_h(world["admin_token"]),
+    )
+    client.post(
+        f"/v1/knowledge/{version_id}/publish",
+        json={"audience": "internal"},
+        headers=_h(world["admin_token"]),
+    )
+    course = client.post(
+        "/v1/training/courses",
+        json={
+            "role_code": f"c3role-{uuid.uuid4().hex[:4]}",
+            "role_name": "C3 岗位",
+            "title": "C3 课程",
+            "knowledge_version_ids": [version_id],
+        },
+        headers=_h(world["admin_token"]),
+    )
+    assert course.status_code == 200, course.text
+    course_id = course.json()["course_id"]
+    client.post(
+        f"/v1/training/courses/{course_id}/questions",
+        json={"question_type": "SINGLE_CHOICE", "prompt": "q", "answer_key": {"correct": "a"}},
+        headers=_h(world["admin_token"]),
+    )
+    client.post(f"/v1/training/courses/{course_id}/publish", headers=_h(world["admin_token"]))
+    assignment = client.post(
+        "/v1/training/assignments",
+        json={"course_id": course_id, "learner_subject_id": world["learner_a"]},
+        headers=_h(world["admin_token"]),
+    )
+    assert assignment.status_code == 200, assignment.text
+    response = _content(client, world["token_a"], assignment.json()["assignment_id"])
+    assert response.status_code == 409, response.text

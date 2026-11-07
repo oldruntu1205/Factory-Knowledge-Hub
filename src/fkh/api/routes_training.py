@@ -184,6 +184,44 @@ def progress(
         raise _translate(exc) from exc
 
 
+@router.get("/v1/training/assignments/{assignment_id}/content", summary="读取课程正文本")
+def content(
+    assignment_id: str,
+    request: Request,
+    context: PrincipalDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+    conn: ConnDep,
+    cursor: str | None = None,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """按课程源返回批准正文的父块（分页），并落一条读取审计。
+
+    可见性是交集（L1 2026-11-07）：任务属于本人 ∧ 课程 PUBLISHED ∧ 版本属于课程源 ∧
+    内部身份 ∧ audience=internal ∧ APPROVED_INTERNAL ∧ scope 覆盖 ∧ 块 ACL 允许。
+    """
+    from fkh.authz.policy import is_external_customer
+
+    context.require_scope("learner")
+    service = TrainingService(conn, context.tenant_id)
+    try:
+        return service.content_page(
+            assignment_id=_uuid(assignment_id, "assignment_id"),
+            learner_subject_id=context.subject,
+            cursor=cursor,
+            limit=limit,
+            cursor_key=settings.retrieval_hash_key or settings.jwt_secret or "",
+            trace_id=str(getattr(request.state, "trace_id", "-")),
+            viewer_allowed_scopes=context.allowed_scopes,
+            viewer_is_external=is_external_customer(context.allowed_scopes),
+            viewer_principal_id=context.principal_id,
+            viewer_subject=context.to_subject(),
+        )
+    except CourseNotFound as exc:
+        raise ApiError(ErrorCode.ACCESS_DENIED, detail=str(exc)) from exc
+    except TrainingError as exc:
+        raise ApiError(ErrorCode.VERSION_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/v1/training/practical-signoffs", summary="导师实操签核")
 def practical_signoff(
     payload: SignoffRequest,

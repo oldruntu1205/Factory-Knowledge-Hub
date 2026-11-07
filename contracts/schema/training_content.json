@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fkh.local/schema/training_content.json",
+  "title": "TrainingContentPage",
+  "description": "GET /v1/training/assignments/{id}/content（2026-11-07 L1 条件通过）：按课程源分组的批准正文父块。可见性为交集：任务属于本人 ∧ 课程 PUBLISHED ∧ 版本属于课程源 ∧ 内部身份 ∧ audience=internal ∧ status=APPROVED_INTERNAL ∧ required_scope 被覆盖 ∧ 块 ACL 允许。源版本进入禁止状态时整课 409；cursor 为服务端签名，绑定主体/任务/课程修订。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "assignment_id",
+    "course_id",
+    "course_title",
+    "course_version",
+    "sources",
+    "next_cursor"
+  ],
+  "properties": {
+    "assignment_id": { "type": "string", "format": "uuid" },
+    "course_id": { "type": "string", "format": "uuid" },
+    "course_title": { "type": "string" },
+    "course_version": { "type": "integer", "minimum": 1 },
+    "sources": {
+      "type": "array",
+      "description": "按课程源顺序分组；每组的块按 locator.block_index 稳定排序",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version_id", "title", "version_no", "status", "blocks"],
+        "properties": {
+          "version_id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "version_no": { "type": "integer", "minimum": 1 },
+          "status": { "type": "string", "enum": ["APPROVED_INTERNAL"] },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["chunk_id", "heading_path", "locator", "text", "token_count"],
+              "properties": {
+                "chunk_id": { "type": "string", "format": "uuid" },
+                "heading_path": { "type": "array", "items": { "type": "string" } },
+                "locator": { "type": ["object", "null"] },
+                "text": { "type": "string", "minLength": 1 },
+                "token_count": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "next_cursor": {
+      "type": ["string", "null"],
+      "description": "服务端签名的位置声明；篡改、跨主体/跨任务复用、过期均被拒绝（409）"
+    }
+  }
+}

@@ -53,6 +53,19 @@
 | 培训反馈 `/v1/training/feedback` | 未实现 |
 | 学习进度与知识检索联动 | 待签核逻辑确定后再做 |
 
+### 5.1 正文本读取（`GET /v1/training/assignments/{id}/content`）
+
+- 权限：`learner`；任务必须属于令牌主体（他人/不存在同码 403）；
+- 可见性是**交集**：课程 `PUBLISHED` ∧ 版本属于课程源 ∧ 内部身份 ∧ `audience=internal` ∧
+  `status=APPROVED_INTERNAL` ∧ `required_scope` 被 `allowed_scopes` 覆盖 ∧ 块 ACL 允许；
+  父块只有在其**全部子块**都通过 ACL 时才返回全文（防"用父块绕过行级 ACL"）；
+- 源版本一旦进入禁止状态（撤销/弃用/待复核）→ **整课 409**，不返回残缺课程；
+  分级 C3+ 暂无学员授权口径，同样整课 409；
+- 分页 `limit` 1–20（默认 5），`cursor` 为 **HMAC 签名**的位置声明，绑定租户/主体/任务/课程修订，
+  篡改、跨主体或跨任务复用、过期 → 409；每页重新校验，旧游标不保留撤销前的读取资格；
+- 每次成功读取落一条 `training_content_access_log`（主体、任务、课程修订、返回的版本与块、trace），
+  **不记正文、令牌或原始游标**（迁移 `0020`）。
+
 ## 6. 验收证据
 
 `tests/e2e/test_training_api.py`（10 项）：完整链路、改分被拒、发布缺知识源被拒、
