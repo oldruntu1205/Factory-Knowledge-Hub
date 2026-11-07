@@ -162,6 +162,17 @@ v3 白名单只有 11 个单位，`0.2MPa` / `60秒` / `1.5倍` 不构成 claim�
 按 L1 裁决（`_evidence/l1_reply_units_20261107.md`）补入压力/时间/倍数/电功率等工业量纲，
 版本升 `literal-support-v4`；`倍` 不与 `%` 或裸数互认；列对齐约束保持不变。
 
+### 引用 id 的语义（2026-11-07 补）
+
+- 模型只能引用 prompt 里 `<evidence id="...">` 的值；这些 id 是**上下文块 id**；
+- 父块恢复发生时，上下文块 id **就是父块 id**，因此 `citations[].evidence_id` 也是父块 id，
+  不是检索命中的子块 id；
+- 模型若引用了「真实存在但未进入上下文块」的 id，会被白名单丢弃（等价于没引用），
+  不会被当成合法引用——这条由 `tests/e2e/test_answer_gate_golden.py`
+  的 `test_citation_id_is_the_context_block_id_not_the_hit_chunk` 钉住；
+- 前端「查看原文」把该 id 交给 `GET /v1/evidence/{id}`，父/子 id 都能解析，
+  返回体里的 `text_level` 表明实际正文来源。
+
 ### 对外视图 `literal_support`（2026-11-07）
 
 `AnswerResponse` 新增 `literal_support`：`rule / applicable / supported / codes / numbers / disclaimer`。

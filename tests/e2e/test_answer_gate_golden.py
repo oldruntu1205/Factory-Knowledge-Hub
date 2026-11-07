@@ -307,3 +307,35 @@ def test_public_content_is_visible_to_customer_scope(corpus: dict[str, Any]) -> 
         scope="customer_public",
     )
     assert outcome.payload["status"] == str(AnswerStatus.ANSWERED), outcome.payload
+
+
+def _chunk_ids(corpus: dict[str, Any], version_id: str) -> dict[str, str]:
+    with psycopg.connect(corpus["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (corpus["tenant"],))
+        rows = conn.execute(
+            """SELECT c.chunk_kind, c.id FROM knowledge_chunks c
+                WHERE c.tenant_id = %s AND c.version_id = %s""",
+            (corpus["tenant"], version_id),
+        ).fetchall()
+    return {str(kind): str(chunk) for kind, chunk in rows}
+
+
+def test_citation_id_is_the_context_block_id_not_the_hit_chunk(
+    corpus: dict[str, Any],
+) -> None:
+    """引用 id 的语义是**上下文块 id**：父块恢复后就是父块 id。
+
+    这是集成方最容易误解的一处：模型看到的 `<evidence id>` 与检索命中的子块 id 不是同一个。
+    """
+    ids = _chunk_ids(corpus, corpus["quality_version"])
+    parent_id, child_id = ids["parent"], ids["child"]
+
+    # 1) 用父块 id 引用 → 合法
+    ok = _ask(corpus, "气密性测试充气压力是多少？", f"充气压力为 0.2MPa。\n引用：{parent_id}")
+    assert ok.payload["status"] == str(AnswerStatus.ANSWERED), ok.payload
+    assert [c["evidence_id"] for c in ok.payload["citations"]] == [parent_id]
+
+    # 2) 用真实存在、但没进入上下文块的子块 id 引用 → 被白名单丢弃
+    dropped = _ask(corpus, "气密性测试充气压力是多少？", f"充气压力为 0.2MPa。\n引用：{child_id}")
+    assert dropped.payload["status"] != str(AnswerStatus.ANSWERED), dropped.payload
+    assert dropped.payload["citations"] == []

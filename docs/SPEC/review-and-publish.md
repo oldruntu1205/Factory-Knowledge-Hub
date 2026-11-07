@@ -105,3 +105,18 @@
 - `tests/security/test_state_machine_parity.py`：应用层与数据库状态机一致（状态增至 8 个后自动扩展为 8×8）。
 - `tests/e2e/test_discard_flow.py`（10 项）：弃用的允许/拒绝来源、审计与事件、幂等、终态、
   检索不可见、版本号不回收、培训联动、跨租户无副作用。
+
+## 对外发布的三道硬条件（2026-11-07 实测补充）
+
+要把一份内容发布为 `PUBLISHED_PUBLIC`，三个条件缺一不可，且失败都按既有语义返回：
+
+| # | 条件 | 违反时的表现 |
+|---|---|---|
+| 1 | 版本必须已是 `APPROVED_INTERNAL` | 409（只有内部可用才能对外发布） |
+| 2 | **内容分级必须是 C0**（`classification=0`） | 409（`assert_publishable`：仅 C0 可公开） |
+| 3 | **公开审批人 ≠ 技术审批人**（四眼原则） | 409（同一主体不得既技术审批又公开审批） |
+| 4 | 操作令牌需要 `knowledge.publish_public` | 403 |
+
+另一个容易误判的点：`customer_public` 受众 + `approve_internal` 之后，内容在**客户范围里检索不到**——
+可见性谓词要求 `PUBLISHED_PUBLIC + customer_public`（或 `APPROVED_INTERNAL + internal`）。
+"批了但没对外发布" 不等于客户能看。

@@ -11,6 +11,16 @@
 本端点就是这个入口：每次访问都重新走租户 → 状态 → scope → ACL 判定，并写访问审计。
 
 `evidence_id` 的取值域是 `knowledge_chunks.id`（与 `AnswerResponse.citations[].evidence_id` 同源）。
+
+**父块 / 子块都能查，但语义不同**（2026-11-07 补，集成方最容易误解的一处）：
+
+| 传入的 id | 返回正文 | `text_evidence_id` |
+|---|---|---|
+| 子块 id | 父块全文（`text_level=PARENT`），且父块与其下全部子块都通过检查 | 父块 id |
+| 父块 id | 父块全文，同样要求其下全部子块通过检查（第 5 条检查） | 父块 id |
+
+而 **`AnswerResponse.citations[].evidence_id` 给的是「上下文块 id」**——父块恢复发生时它就是父块 id，
+不是检索命中的子块 id。两者都可用于调用本端点，但前端展示的定位信息应与 `text_level` 一致地理解。
 **不**接受 `rag_citations.id`：本端点定位可复用片段，不承诺引用级失效；历史 citation 不构成访问凭证。
 
 ## 2. 判定顺序（任一条不满足 ⇒ 403，对外不可区分）
