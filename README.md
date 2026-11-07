@@ -68,7 +68,7 @@ L1 第 10 章给出的仓库结构是目标形态。Phase 0 采用**单包多模
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups          # 创建 .venv（Python 3.12）并锁定依赖
-uv run pytest -q              # 538 项：契约 + ACL + 状态机 + 解析 + 入库 + 审核 + 检索 + 混合召回 + 培训
+uv run pytest -q              # 555 项：契约 + ACL + 状态机 + 解析 + 入库 + 审核 + 检索 + 混合召回 + 培训
 uv run uvicorn fkh.api.main:app --port 8000   # 启动 API 骨架
 ```
 
