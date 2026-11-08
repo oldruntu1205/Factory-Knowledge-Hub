@@ -37,6 +37,7 @@
 | 首次清理 | `update or delete on catalog_conflict_candidates violates foreign key constraint "fk_group_selected_candidate"`（0015 是 RESTRICT） | `0032` 把该约束改为列级 `ON DELETE SET NULL (selected_candidate_id)` |
 | 再次清理 | `catalog_conflict_groups_check` 要求 KEEP 必须有 `selected_candidate_id`，置空后撞 CHECK | `0033` 放宽为"有候选 **或** 有决议快照" |
 | 审计 | 候选被级联删除后无法回答"保留的是哪一行" | `0031` 决议时写 `resolved_snapshot`（规格/原文/价格/候选 ID/操作者/备注） |
+| 快照有效性（L1 复审） | 0033 只要求 `resolved_snapshot IS NOT NULL`，`{}`/缺键也能过 | `0034` 加结构约束：必须是对象且含 candidate_id/code/spec/raw_price/resolved_by/decision（非空），历史坏记录用带 `legacy_recovered` 标记的占位修复 |
 
 验收断言：撤销后证据直读立即 403；清理后块/目录条目/候选计数均为 0；冲突组仍是 `KEEP`、
 `selected_candidate_id` 为空、`resolved_snapshot` 完整（含 `spec` 与 `raw_price`）、

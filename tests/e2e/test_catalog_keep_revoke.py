@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -294,3 +295,37 @@ def test_keep_resolution_survives_revoke_and_purge(
         assert snapshot["decision"] == "KEEP"
         assert str(snapshot["resolved_by"]) == str(world["ops"])
         assert snapshot["raw_text"].startswith("A112420")
+
+
+def test_keep_requires_structurally_valid_snapshot(
+    client: TestClient, world: dict[str, Any], admin: psycopg.Connection[Any]
+) -> None:
+    """L1 2026-11-08：KEEP 的库层约束必须挡住结构无效的快照（`{}`/缺键/空值）。"""
+    seeded = _seed_conflict(admin, world, client)
+
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(world["tenant"]),))
+        # 空对象：应被 0034 的结构约束拒绝
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE catalog_conflict_groups SET resolved_snapshot = '{}'::jsonb"
+                " WHERE tenant_id = %s AND group_id = %s",
+                (world["tenant"], seeded["group_id"]),
+            )
+        conn.rollback()
+
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(world["tenant"]),))
+        # 缺 spec / raw_price 的快照同样拒绝
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE catalog_conflict_groups SET resolved_snapshot = %s::jsonb"
+                " WHERE tenant_id = %s AND group_id = %s",
+                (
+                    json.dumps({"decision": "KEEP", "candidate_id": "x", "code": "A112420",
+                                "resolved_by": "y"}),
+                    world["tenant"],
+                    seeded["group_id"],
+                ),
+            )
+        conn.rollback()
