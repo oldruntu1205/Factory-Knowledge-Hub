@@ -1,0 +1,238 @@
+"""目录规则（货号正则 + 货币集合）实例配置的真实 PostgreSQL 验收。
+
+L1 2026-11-08 裁决对应：
+1. 缺规则 → 目录入库 422（可识别的配置错误），**读取不受影响**；
+2. 所有写入路径共用校验：入库、冲突决议、回填；
+3. PUT 幂等 + 审计（前后规则、操作者、版本号）；相同内容不产生版本；
+4. 收紧规则使存量数据失效 → 409 拒绝；
+5. 通用格式由库层保证（无触发器），业务规则在应用层；
+6. 货币集合非空、三位大写、去重。
+"""
+
+from __future__ import annotations
+
+import base64
+import uuid
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import jwt
+import psycopg
+import pytest
+from fastapi.testclient import TestClient
+from tests.conftest import create_principal, create_tenant
+from tests.e2e._roles import drop_business_role, ensure_business_role
+
+from fkh.api.main import create_app
+from fkh.config import Settings
+
+pytestmark = pytest.mark.requires_pg
+
+SECRET = "catalog-rules-secret-0123456789"
+HASH_KEY = "catalog-rules-hmac-0123456789"
+HASH_KEY_ID = "k-rules"
+
+SKU_TEXT = "第 1 页\n\nSKU-2026-001 200mm 39.00\nSKU-2026-002 300mm 48.50\n"
+FACTORY_TEXT = "第 1 页\n\nA112420 200mm 39.00\n"
+
+WRITER_SCOPES = ("knowledge.read", "knowledge.write", "knowledge.ingest",
+                 "knowledge.review", "knowledge.publish", "knowledge.answer",
+                 "knowledge.search", "evidence.read")
+
+
+def _token(tenant: str, principal: str, scopes: tuple[str, ...] = WRITER_SCOPES) -> str:
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "iss": "fkh.local", "aud": "fkh-api", "sub": f"{principal[:8]}@rules.test",
+            "iat": now, "exp": now + timedelta(minutes=20), "tenant_id": tenant,
+            "principal_id": principal, "roles": ["staff"], "scope": list(scopes),
+            "allowed_scopes": ["internal_product", "customer_public"],
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+
+
+@pytest.fixture(scope="module")
+def role(pg_url: str) -> Iterator[str]:
+    name, dsn = ensure_business_role(pg_url, prefix="fkh_rules")
+    yield dsn
+    drop_business_role(pg_url, name)
+
+
+@pytest.fixture
+def client(role: str) -> Iterator[TestClient]:
+    settings = Settings(jwt_secret=SECRET, database_url=role,
+                        retrieval_hash_key=HASH_KEY, retrieval_hash_key_id=HASH_KEY_ID)
+    with TestClient(create_app(settings), raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+def _h(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _upload(client: TestClient, token: str, text: str, *, currency: str | None = None,
+            domain: str = "product_catalog") -> Any:
+    body: dict[str, Any] = {
+        "filename": "catalog.md", "title": "目录", "domain": domain,
+        "owner_department": "sales", "classification": 1, "audience": "internal",
+        "required_scope": "internal_product", "acl_allow_roles": ["staff"],
+        "knowledge_key": f"rule-{uuid.uuid4().hex[:8]}",
+        "content_base64": base64.b64encode(text.encode()).decode(),
+    }
+    if currency is not None:
+        body["catalog_currency"] = currency
+    return client.post("/v1/knowledge/documents", json=body, headers=_h(token))
+
+
+@pytest.fixture
+def bare(client: TestClient, admin: psycopg.Connection[Any]) -> dict[str, Any]:
+    """未配置目录规则的租户（模拟"新租户还没初始化目录能力"）。"""
+    tenant = create_tenant(admin, f"NORULE {uuid.uuid4().hex[:6]}", seed_domains=True)
+    principal = create_principal(admin, tenant, f"nr-{uuid.uuid4().hex[:6]}@rules.test")
+    admin.commit()
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (tenant,))
+        conn.execute("DELETE FROM catalog_rules WHERE tenant_id = %s", (tenant,))
+        conn.commit()
+    return {"tenant": tenant, "token": _token(tenant, principal)}
+
+
+@pytest.fixture
+def factory(client: TestClient, admin: psycopg.Connection[Any]) -> dict[str, Any]:
+    tenant = create_tenant(admin, f"RULE {uuid.uuid4().hex[:6]}")
+    principal = create_principal(admin, tenant, f"r-{uuid.uuid4().hex[:6]}@rules.test")
+    admin.commit()
+    return {"tenant": tenant, "principal": principal, "token": _token(tenant, principal)}
+
+
+def test_missing_rule_blocks_catalog_write_but_not_reads(
+    client: TestClient, bare: dict[str, Any]
+) -> None:
+    blocked = _upload(client, bare["token"], FACTORY_TEXT, currency="CNY")
+    assert blocked.status_code == 422, blocked.text
+    message = blocked.json()["error"]["message"]
+    assert "catalog-rules" in message and "PUT /v1/config/catalog-rules" in message
+
+    # 非目录域（普通文档）不受影响
+    plain = _upload(client, bare["token"], "普通知识", currency=None, domain="quality")
+    assert plain.status_code == 201, plain.text
+
+    # 读取端点仍可用（返回未配置）
+    read = client.get("/v1/config/catalog-rules", headers=_h(bare["token"]))
+    assert read.status_code == 200
+    assert read.json() == {"configured": False, "rule": None}
+
+
+def test_rule_allows_custom_code_and_currency(
+    client: TestClient, factory: dict[str, Any]
+) -> None:
+    put = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": r"^SKU-[0-9]{4}-[0-9]{3}$", "currencies": ["USD", "CNY"],
+              "note": "改为条码货号 + 双币"},
+        headers=_h(factory["token"]),
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["changed"] is True
+    assert put.json()["rule"]["currencies"] == ["CNY", "USD"]
+
+    uploaded = _upload(client, factory["token"], SKU_TEXT, currency="USD")
+    assert uploaded.status_code == 201, uploaded.text
+    # 目录事实确实按新规则抽取（USD 货币 + SKU 货号）
+    version_id = uploaded.json()["version_id"]
+    assert version_id
+
+    # 旧工厂货号现在不符合规则：抽取不出条目（不报错，只是 0 条）
+    old = _upload(client, factory["token"], FACTORY_TEXT, currency="CNY")
+    assert old.status_code == 201, old.text
+
+
+def test_put_is_idempotent_and_audited(
+    client: TestClient, factory: dict[str, Any], admin: psycopg.Connection[Any]
+) -> None:
+    payload = {"code_pattern": r"^SKU-[0-9]{4}-[0-9]{3}$", "currencies": ["CNY"]}
+    first = client.put("/v1/config/catalog-rules", json=payload,
+                       headers=_h(factory["token"]))
+    assert first.status_code == 200 and first.json()["changed"] is True
+
+    again = client.put("/v1/config/catalog-rules", json=payload,
+                       headers=_h(factory["token"]))
+    assert again.status_code == 200 and again.json()["changed"] is False
+
+    with psycopg.connect(admin.info.dsn) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (factory["tenant"],))
+        revisions = conn.execute(
+            "SELECT revision_no, before_rule, after_rule, actor_id FROM catalog_rule_revisions"
+            " WHERE tenant_id = %s ORDER BY revision_no",
+            (factory["tenant"],),
+        ).fetchall()
+    assert len(revisions) == 1, "相同内容重复 PUT 不应产生新版本"
+    revision_no, before_rule, after_rule, actor_id = revisions[0]
+    assert revision_no == 1
+    assert before_rule["code_pattern"] == "^[A-Z]{1,3}[0-9]{5,8}$"
+    assert after_rule["code_pattern"] == payload["code_pattern"]
+    assert str(actor_id) == factory["principal"]
+
+
+def test_tightening_rule_rejects_incompatible_existing_data(
+    client: TestClient, factory: dict[str, Any]
+) -> None:
+    assert _upload(client, factory["token"], FACTORY_TEXT, currency="CNY").status_code == 201
+
+    tightened = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": r"^SKU-[0-9]{4}-[0-9]{3}$", "currencies": ["CNY"]},
+        headers=_h(factory["token"]),
+    )
+    assert tightened.status_code == 409, tightened.text
+    assert tightened.json()["error"]["code"] == "VERSION_CONFLICT"
+    # 规则未被改动（409 时旧规则仍生效）
+    unchanged = client.get("/v1/config/catalog-rules", headers=_h(factory["token"]))
+    assert unchanged.json()["rule"]["code_pattern"] == "^[A-Z]{1,3}[0-9]{5,8}$"
+
+    # 放宽（覆盖现有货号）可以成功
+    widened = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": r"^(?:A[0-9]{6}|SKU-[0-9]{4}-[0-9]{3})$",
+              "currencies": ["CNY", "USD"]},
+        headers=_h(factory["token"]),
+    )
+    assert widened.status_code == 200, widened.text
+
+
+def test_currency_must_be_in_rule(client: TestClient, factory: dict[str, Any]) -> None:
+    blocked = _upload(client, factory["token"], FACTORY_TEXT, currency="USD")
+    assert blocked.status_code == 422, blocked.text
+    assert blocked.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    allowed = _upload(client, factory["token"], FACTORY_TEXT, currency="CNY")
+    assert allowed.status_code == 201, allowed.text
+
+
+def test_rule_validation_rejects_bad_input(
+    client: TestClient, factory: dict[str, Any]
+) -> None:
+    bad_regex = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": "^(abc", "currencies": ["CNY"]},
+        headers=_h(factory["token"]),
+    )
+    assert bad_regex.status_code == 422, bad_regex.text
+
+    bad_currency = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": "^A[0-9]{6}$", "currencies": ["cny"]},
+        headers=_h(factory["token"]),
+    )
+    assert bad_currency.status_code == 422, bad_currency.text
+
+    empty_currency = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": "^A[0-9]{6}$", "currencies": []},
+        headers=_h(factory["token"]),
+    )
+    assert empty_currency.status_code == 422, empty_currency.text

@@ -21,13 +21,18 @@ from uuid import UUID
 
 import psycopg
 
+from fkh.domain.catalog_rules import require_rule
 from fkh.workers.repository import IngestionRepository
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="目录条目补录（幂等）")
     parser.add_argument("--url", required=True, help="数据库连接串")
-    parser.add_argument("--currency", required=True, choices=["CNY"], help="目录货币口径（必须显式）")
+    parser.add_argument(
+        "--currency",
+        required=True,
+        help="目录货币口径（必须显式；须在该租户的 catalog_rules 允许集合内）",
+    )
     parser.add_argument("--tenant", default=None, help="只处理指定租户（默认全部）")
     parser.add_argument("--dry-run", action="store_true", help="只统计不写库")
     args = parser.parse_args(argv)
@@ -57,8 +62,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.dry_run:
                 print(f"[dry-run] {version_id}")
                 continue
+            # 与入库/决议共用同一套校验：规则来自实例配置，缺规则或货币不允许直接报错
+            rule = require_rule(conn, tenant_id)
             stats = IngestionRepository(conn, tenant_id).extract_catalog_items(
-                version_id=version_id, currency=args.currency
+                version_id=version_id, currency=args.currency, rule=rule
             )
             for key in totals:
                 totals[key] += getattr(stats, key)

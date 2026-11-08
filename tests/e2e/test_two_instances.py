@@ -140,6 +140,12 @@ def _seed_tenant(dsn: str) -> dict[str, str]:
                 " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
                 (tenant, code, label),
             )
+        # 实例初始化：目录规则（货号正则 + 货币集合）；缺规则时目录入库会被拒
+        conn.execute(
+            "INSERT INTO catalog_rules (tenant_id, code_pattern, currencies)"
+            " VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (tenant, "^[A-Z]{1,3}[0-9]{5,8}$", ["CNY"]),
+        )
         conn.execute("SELECT set_config('app.tenant_id', '', false)")
         conn.commit()
     return {"tenant": str(tenant), "ops": str(ops), "customer": str(customer)}

@@ -19,6 +19,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from fkh.api.db import get_conn
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.security import PrincipalDep
+from fkh.domain.catalog_rules import (
+    CatalogRuleConflict,
+    CatalogRuleError,
+    load_rule,
+    save_rule,
+)
 from fkh.domain.domains import (
     DomainConflict,
     DomainError,
@@ -77,6 +83,50 @@ def register_domain(
         "outcome": str(outcome),
         "created": outcome is RegisterOutcome.CREATED,
     }
+
+
+class CatalogRulePutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code_pattern: str = Field(min_length=2, max_length=200)
+    currencies: list[str] = Field(min_length=1)
+    note: str | None = Field(default=None, max_length=200)
+
+
+def _rule_payload(rule: Any) -> dict[str, Any]:
+    return {"code_pattern": rule.code_pattern, "currencies": list(rule.currencies)}
+
+
+@router.get("/v1/config/catalog-rules", summary="读取本实例的目录规则")
+def get_catalog_rules(context: PrincipalDep, conn: ConnDep) -> dict[str, Any]:
+    context.require_scope("knowledge.read")
+    rule = load_rule(conn, context.tenant_id)
+    return {"configured": rule is not None, "rule": _rule_payload(rule) if rule else None}
+
+
+@router.put("/v1/config/catalog-rules", summary="整体替换目录规则（幂等，带审计）")
+def put_catalog_rules(
+    payload: CatalogRulePutRequest, context: PrincipalDep, conn: ConnDep
+) -> dict[str, Any]:
+    context.require_scope("knowledge.write")
+    try:
+        rule, changed = save_rule(
+            conn,
+            context.tenant_id,
+            actor_id=context.principal_id,
+            code_pattern=payload.code_pattern,
+            currencies=payload.currencies,
+            note=payload.note,
+        )
+    except CatalogRuleConflict as exc:
+        raise ApiError(ErrorCode.VERSION_CONFLICT, detail=str(exc)) from exc
+    except CatalogRuleError as exc:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=str(exc),
+            hint="catalog-rules: code_pattern must compile; currencies are 3-letter uppercase",
+        ) from exc
+    return {"configured": True, "changed": changed, "rule": _rule_payload(rule)}
 
 
 __all__ = ["router"]

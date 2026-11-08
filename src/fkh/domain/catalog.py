@@ -20,12 +20,27 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-# 货号：1–3 个大写字母 + 5–8 位数字（客户目录实测形如 A112420 / C190010）
-ROW = re.compile(
-    r"^(?P<code>[A-Z]{1,3}\d{5,8})\s+"
-    r"(?P<spec>\S.*?)"
-    r"\s+(?P<price>\d{1,6}(?:\.\d{1,2})?)$"
-)
+# 工厂默认货号：1–3 个大写字母 + 5–8 位数字（客户目录实测形如 A112420 / C190010）。
+# 2026-11-08（0036）：真正的判定规则来自实例配置（catalog_rules）；
+# 这里的常量只用于**读路径兜底**与无配置时的显式报错提示。
+FACTORY_CODE_PATTERN = r"^[A-Z]{1,3}[0-9]{5,8}$"
+
+
+def _row_regex(code_pattern: str) -> re.Pattern[str]:
+    """把「货号正则」拼成整行正则；兼容带/不带 ^$ 锚点的写法。"""
+    body = code_pattern.strip()
+    if body.startswith("^"):
+        body = body[1:]
+    if body.endswith("$") and not body.endswith("\\$"):
+        body = body[:-1]
+    return re.compile(
+        rf"^(?P<code>(?:{body}))\s+"
+        r"(?P<spec>\S.*?)"
+        r"\s+(?P<price>\d{1,6}(?:\.\d{1,2})?)$"
+    )
+
+
+ROW = _row_regex(FACTORY_CODE_PATTERN)
 _RANGE = re.compile(r"^\d{1,6}(?:\.\d{1,2})?\s*[-~～]\s*\d{1,6}(?:\.\d{1,2})?$")
 
 
@@ -49,12 +64,19 @@ class CatalogParse:
         return len(self.unsupported)
 
 
-def _looks_like_code(token: str) -> bool:
-    return ROW.match(f"{token} x 0.00") is not None
+def _looks_like_code(token: str, row_regex: re.Pattern[str] | None = None) -> bool:
+    return (row_regex or ROW).match(f"{token} x 0.00") is not None
 
 
-def parse_catalog_text(text: str) -> CatalogParse:
-    """逐行抽取；同一段文本内重复货号只保留第一条（重复会在入库层被唯一约束暴露）。"""
+def parse_catalog_text(
+    text: str, *, code_pattern: str | None = None
+) -> CatalogParse:
+    """逐行抽取；同一段文本内重复货号只保留第一条（重复会在入库层被唯一约束暴露）。
+
+    `code_pattern` 由调用方从实例规则加载后传入（显式，不在本函数里查库）；
+    未传时使用工厂默认，仅用于读路径/无配置兜底。
+    """
+    row_regex = _row_regex(code_pattern) if code_pattern else ROW
     rows: list[CatalogRow] = []
     unsupported: list[str] = []
     seen: set[str] = set()
@@ -64,7 +86,7 @@ def parse_catalog_text(text: str) -> CatalogParse:
         if not line:
             continue
 
-        match = ROW.match(line)
+        match = row_regex.match(line)
         if match is not None:
             code = match.group("code")
             if code in seen:
@@ -92,7 +114,7 @@ def parse_catalog_text(text: str) -> CatalogParse:
 
         # 行首是货号、但整行不构成"单一价格行"：记 unsupported，不猜
         head = line.split(maxsplit=1)[0]
-        if _looks_like_code(head):
+        if _looks_like_code(head, row_regex):
             unsupported.append(line)
 
     return CatalogParse(rows=tuple(rows), unsupported=tuple(unsupported))

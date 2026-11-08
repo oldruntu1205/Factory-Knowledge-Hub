@@ -28,6 +28,7 @@ from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.security import PrincipalDep
 from fkh.authz.policy import AclPolicy, Decision, evaluate
 from fkh.catalog.conflicts import bind_tenant
+from fkh.domain.catalog_rules import CatalogRuleMissing
 from fkh.domain.domains import DomainError, DomainMissing, DomainService
 from fkh.workers.ingestion import IngestionRequest, ingest_document
 from fkh.workers.repository import DuplicateContentError
@@ -224,6 +225,12 @@ def upload_document(
     except DuplicateContentError as exc:
         # 同一文档下内容完全相同的版本：同样是"重复拒绝"，不静默再建一版
         raise ApiError(ErrorCode.VERSION_CONFLICT, detail=str(exc)) from exc
+    except CatalogRuleMissing as exc:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=str(exc),
+            hint="catalog-rules: configure via PUT /v1/config/catalog-rules first",
+        ) from exc
     except ValueError as exc:
         raise ApiError(ErrorCode.VALIDATION_ERROR, detail=str(exc)) from exc
 

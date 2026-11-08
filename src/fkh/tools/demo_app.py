@@ -171,6 +171,12 @@ def _seed(
                 " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
                 (tenant, code, label),
             )
+        # 实例初始化：目录规则（货号正则 + 货币集合）。缺规则时目录入库会被拒。
+        conn.execute(
+            "INSERT INTO catalog_rules (tenant_id, code_pattern, currencies)"
+            " VALUES (%s, %s, %s) ON CONFLICT (tenant_id) DO NOTHING",
+            (tenant, "^[A-Z]{1,3}[0-9]{5,8}$", ["CNY"]),
+        )
         conn.commit()
 
         principal = conn.execute(

@@ -168,7 +168,8 @@ def create_tenant(conn: psycopg.Connection, name: str, *, seed_domains: bool = T
 
     2026-11-08（ADR-009 + 0035）：知识域改为实例配置，文档对域有复合外键。
     测试默认按"工厂模板"种子 8 域（等价于工厂实例的部署初始化）；
-    需要验证"新租户域清单为空"的用例传 `seed_domains=False`。
+    同时播种**工厂目录规则**（货号正则 + CNY），等价于工厂实例部署初始化。
+    需要验证"新租户域清单为空"的用例传 `seed_domains=False`（规则同样不播种）。
     """
     row = conn.execute("INSERT INTO tenants (name) VALUES (%s) RETURNING id", (name,)).fetchone()
     assert row is not None
@@ -181,6 +182,11 @@ def create_tenant(conn: psycopg.Connection, name: str, *, seed_domains: bool = T
                 " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
                 (tenant, code, label),
             )
+        conn.execute(
+            "INSERT INTO catalog_rules (tenant_id, code_pattern, currencies)"
+            " VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (tenant, "^[A-Z]{1,3}[0-9]{5,8}$", ["CNY"]),
+        )
         conn.execute("SELECT set_config('app.tenant_id', '', false)")
     return tenant
 

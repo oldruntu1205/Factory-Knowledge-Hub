@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 from fkh.authz.policy import AclPolicy
 from fkh.catalog.conflicts import ConflictError, add_candidates, create_group, lock_group
 from fkh.domain.catalog import CatalogExtractionStats, parse_catalog_text
+from fkh.domain.catalog_rules import CatalogRule, require_rule
 from fkh.domain.chunking.types import Chunk
 from fkh.domain.lexeme import segment_cjk
 from fkh.domain.state_machine import VersionStatus, assert_transition
@@ -244,7 +245,7 @@ class IngestionRepository:
         return len(parents), len(children)
 
     def extract_catalog_items(
-        self, *, version_id: UUID, currency: str
+        self, *, version_id: UUID, currency: str, rule: CatalogRule | None = None
     ) -> CatalogExtractionStats:
         """把该版本 child 块里的「货号 规格 单价」行抽成结构化事实。
 
@@ -253,6 +254,12 @@ class IngestionRepository:
         - 已有待办组时按组状态走：OPEN 只补候选、KEEP 按选中候选确保条目、DROP_ALL 确保无条目；
         - 抽取与决议都锁同一行组记录，保证串行化。
         """
+        # 所有写入路径共用同一套校验：调用方未显式传入规则时在此加载（缺规则即报错）
+        if rule is None:
+            rule = require_rule(self._conn, self._tenant)
+        if not rule.accepts_currency(currency):
+            raise ValueError(f"货币 {currency} 不在本实例允许的目录货币集合内")
+
         rows = self._conn.execute(
             """SELECT id, chunk_text, locator
                  FROM knowledge_chunks
@@ -264,10 +271,12 @@ class IngestionRepository:
         occurrences: dict[str, list[tuple[UUID, dict[str, Any], Any]]] = {}
         parsed = unsupported = 0
         for chunk_id, chunk_text, locator in rows:
-            result = parse_catalog_text(str(chunk_text))
+            result = parse_catalog_text(str(chunk_text), code_pattern=rule.code_pattern)
             parsed += len(result.rows)
             unsupported += result.unsupported_count
             for item in result.rows:
+                if not rule.accepts_code(item.code):
+                    raise ValueError(f"货号 {item.code} 不符合本实例的货号规则")
                 occurrences.setdefault(item.code, []).append(
                     (UUID(str(chunk_id)), dict(locator) if locator else {}, item)
                 )

@@ -17,6 +17,7 @@ from uuid import UUID
 import psycopg
 
 from fkh.authz.policy import AclPolicy
+from fkh.domain.catalog_rules import require_rule
 from fkh.domain.chunking.chunker import build_chunks
 from fkh.domain.chunking.tokenize import ApproxCjkTokenCounter, TokenCounter
 from fkh.domain.chunking.types import ChunkingConfig
@@ -70,8 +71,6 @@ class IngestionRequest:
             )
         if not self.content:
             raise ValueError("content 为空，拒绝入库")
-        if self.catalog_currency is not None and self.catalog_currency not in {"CNY"}:
-            raise ValueError(f"不支持的目录货币：{self.catalog_currency}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,8 +182,12 @@ def ingest_document(
             if request.catalog_currency is None:
                 catalog_note.append("catalog_skipped=no_currency")
             else:
+                # 2026-11-08（0036）：目录规则来自实例配置；缺失即报可识别的配置错误
+                rule = require_rule(conn, UUID(str(tenant_id)))
                 catalog_stats = repo.extract_catalog_items(
-                    version_id=version_id, currency=request.catalog_currency
+                    version_id=version_id,
+                    currency=request.catalog_currency,
+                    rule=rule,
                 )
                 catalog_note.append(catalog_stats.as_warning())
 

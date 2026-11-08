@@ -19,6 +19,8 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from fkh.domain.catalog_rules import require_rule
+
 # 仍可操作（可决议/可回填）的版本状态；REVOKED / DISCARDED / SUPERSEDED 一律只读
 OPERABLE_STATUSES = ("RAW", "DRAFT", "REVIEWED", "APPROVED_INTERNAL", "PUBLISHED_PUBLIC")
 
@@ -121,6 +123,10 @@ def create_group(
     if row is not None:
         return UUID(str(row[0]))
     # 并发下另一个事务先建了：拿它并加锁
+    rule = require_rule(conn, tenant_id)
+    if not rule.accepts_code(code):
+        raise ConflictError(f"货号 {code} 不符合本实例的货号规则，请先调整规则或数据")
+
     locked = lock_group(conn, tenant_id, version_id, code)
     if locked is None:  # pragma: no cover - 只可能被删除
         raise ConflictError("待办组创建失败")
