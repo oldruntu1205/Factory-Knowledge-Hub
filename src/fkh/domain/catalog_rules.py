@@ -128,6 +128,7 @@ def save_rule(
     相同内容直接返回 unchanged，不产生审计版本。
     """
     new_rule = compile_rule(code_pattern, currencies)
+    _require_read_committed(conn)
     _bind(conn, tenant_id)
 
     # 锁规则行（不存在时锁租户行，避免并发首次创建产生两条）
@@ -180,6 +181,21 @@ def save_rule(
         ),
     )
     return new_rule, True
+
+
+def _require_read_committed(conn: psycopg.Connection[Any]) -> None:
+    """PUT 的存量检查依赖 READ COMMITTED（每条语句取新快照）。
+
+    在 REPEATABLE READ 下，等待排他锁后再检查仍看到旧快照，会放过刚提交的不兼容数据；
+    此时宁可拒绝写入，也不假装"锁住了就一定安全"。
+    """
+    row = conn.execute("SHOW transaction_isolation").fetchone()
+    level = str(row[0]) if row is not None else ""
+    if level.strip().lower() != "read committed":
+        raise CatalogRuleConflict(
+            "目录规则更新要求 READ COMMITTED 隔离级别（当前 "
+            f"{level}）：该级别下等待锁后能看到新提交的数据"
+        )
 
 
 def _assert_compatible(

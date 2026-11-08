@@ -310,3 +310,102 @@ def test_rule_writes_and_updates_are_mutually_exclusive(
     finally:
         writer.close()
         upgrader.close()
+
+
+def test_put_sees_writes_committed_while_it_waited(
+    factory: dict[str, Any], admin: psycopg.Connection[Any]
+) -> None:
+    """等待锁释放后必须看到刚提交的不兼容数据（READ COMMITTED 语义）。
+
+    否则"锁协议正确"仍会放过：写入提交 → PUT 拿到锁 → 检查旧快照 → 误判兼容。
+    """
+    import threading
+    import time
+
+    from fkh.domain.catalog_rules import CatalogRuleConflict, save_rule
+
+    tenant = uuid.UUID(factory["tenant"])
+    actor = uuid.UUID(factory["principal"])
+    writer = psycopg.connect(admin.info.dsn, autocommit=False)
+    upgrader = psycopg.connect(admin.info.dsn, autocommit=False)
+    outcome: list[BaseException | None] = []
+
+    def _put() -> None:
+        upgrader.execute("SET lock_timeout = '8000ms'")
+        upgrader.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        try:
+            save_rule(upgrader, tenant, actor_id=actor,
+                      code_pattern=r"^SKU-[0-9]{4}-[0-9]{3}$", currencies=["CNY"])
+            upgrader.commit()
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001
+            upgrader.rollback()
+            outcome.append(exc)
+
+    try:
+        writer.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        # 写入事务先按旧规则写入一条"新规则下不合法"的货号，并持有规则共享锁
+        writer.execute(
+            "SELECT code_pattern FROM catalog_rules WHERE tenant_id = %s FOR SHARE",
+            (tenant,),
+        )
+        version_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+        writer.execute(
+            "INSERT INTO knowledge_documents"
+            " (tenant_id, id, knowledge_key, domain, owner_department)"
+            " VALUES (%s, %s, %s, 'product_catalog', 'sales')",
+            (tenant, document_id, f"lock-{uuid.uuid4().hex[:6]}"),
+        )
+        conn_chunk = writer.execute(
+            "SELECT 1"  # 仅占位：条目需要版本身份，见下方 version 插入
+        ).fetchone()
+        assert conn_chunk is not None
+
+        thread = threading.Thread(target=_put)
+        thread.start()
+        time.sleep(0.4)  # 让 PUT 先进入等待
+
+        # 提交：先补一个符合旧规则、但不符合新规则的货号条目
+        writer.execute(
+            """INSERT INTO knowledge_versions
+                 (tenant_id, id, document_id, version_no, title, classification, audience,
+                  status, content_sha256, source_object_key, required_scope)
+               VALUES (%s, %s, %s, 1, '锁验证', 1, 'internal', 'REVOKED',
+                       %s, 'lock/x.md', 'internal_product')""",
+            (tenant, version_id, document_id, "0" * 64),
+        )
+        acl_id = uuid.uuid4()
+        writer.execute(
+            "INSERT INTO acl_policies (tenant_id, id, policy_json)"
+            " VALUES (%s, %s, '{\"allow\": {}, \"deny\": {}}'::jsonb)",
+            (tenant, acl_id),
+        )
+        chunk_id = uuid.uuid4()
+        writer.execute(
+            """INSERT INTO knowledge_chunks
+                 (tenant_id, id, version_id, chunk_kind, chunk_text, chunk_sha256,
+                  tokenizer_id, locator, acl_policy_id, index_generation)
+               VALUES (%s, %s, %s, 'parent', 'A112420 200mm 39.00', %s,
+                       'tok-v1', '{}'::jsonb, %s, 1)""",
+            (tenant, chunk_id, version_id, "0" * 64, acl_id),
+        )
+        writer.execute(
+            """INSERT INTO catalog_items
+                 (tenant_id, version_id, chunk_id, code, spec, raw_text, raw_price,
+                  price, currency, locator)
+               VALUES (%s, %s, %s, 'A112420', '200mm', 'A112420 200mm 39.00',
+                       '39.00', 39.00, 'CNY', '{}'::jsonb)""",
+            (tenant, version_id, chunk_id),
+        )
+        writer.commit()
+
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "PUT 应在写入提交后返回"
+        assert outcome, "PUT 必须有结果"
+        assert isinstance(outcome[0], CatalogRuleConflict), (
+            "PUT 必须看到等待期间提交的不兼容条目并拒绝，而不是误判兼容"
+        )
+    finally:
+        writer.close()
+        upgrader.close()
