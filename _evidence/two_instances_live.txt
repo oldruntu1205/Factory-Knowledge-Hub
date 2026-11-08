@@ -1,0 +1,10 @@
+{"step": "status", "A": {"tenant_id": "f101e87c-1631-4365-9d1d-49ec6fc0afc3", "subject": "648b7644@demo.local"}, "B": {"tenant_id": "085f023e-6617-4e47-9610-01c9edc5d02d", "subject": "f53f141e@demo.local"}}
+{"step": "A_answer", "http": 200, "status": "ANSWERED", "answer": "A112420 的单价为 39.00（CNY），规格：200mm 38*300 24*24。", "citations": 1}
+{"step": "B_answer", "http": 200, "status": "ANSWERED", "answer": "烘焙机银皮收集盒每烘焙 50 锅清理一次，避免积粉影响风道。", "citations": 1}
+{"step": "B_factory_question", "http": 200, "status": "REFUSED"}
+{"step": "A_token_on_B", "http": 401, "error": "UNAUTHENTICATED"}
+{"step": "B_token_on_A", "http": 401, "error": "UNAUTHENTICATED"}
+{"step": "A_revoke", "count": 1, "results": [{"version": "237a4c04-f40a-47b7-8a4f-22e5890fc426", "http": 200}]}
+{"step": "A_after_revoke", "http": 200, "status": "REFUSED"}
+{"step": "B_after_A_revoke", "http": 200, "status": "ANSWERED", "citations": 1}
+{"step": "verdict", "pass": true}

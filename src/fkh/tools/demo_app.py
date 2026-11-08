@@ -131,7 +131,9 @@ def _apply_migrations(dsn: str) -> None:
     apply_main(["--url", dsn])
 
 
-def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
+def _seed(
+    dsn: str, corpus: Path, username: str, *, skip_training_seed: bool = False
+) -> dict[str, Any]:
     """幂等播种：租户/主体/语料/审批/目录抽取。重复启动不会重复入库。"""
     from fkh.authz.policy import AclPolicy
     from fkh.domain.review import ReviewService
@@ -212,71 +214,73 @@ def _seed(dsn: str, corpus: Path, username: str) -> dict[str, Any]:
             review.approve_internal(result.version_id, uuid.UUID(str(principal)))
             conn.commit()
 
-        # 培训链路演示数据：文件 → 课程 → 分配给演示主体（幂等）
-        from fkh.domain.training import TrainingService
+        if not skip_training_seed:
+            # 培训链路演示数据：文件 → 课程 → 分配给演示主体（幂等）
+            from fkh.domain.training import TrainingService
 
-        training = TrainingService(conn, uuid.UUID(str(tenant)))
-        existing_course = conn.execute(
-            "SELECT course_id FROM training_courses WHERE tenant_id = %s AND title = %s",
-            (tenant, "冷凝管安装与检验（演示）"),
-        ).fetchone()
-        if existing_course is None:
-            content = _TRAINING_TEXT.encode()
-            doc = conn.execute(
-                "SELECT id FROM knowledge_documents WHERE tenant_id = %s AND knowledge_key = %s",
-                (tenant, "demo-training-qual"),
+            training = TrainingService(conn, uuid.UUID(str(tenant)))
+            existing_course = conn.execute(
+                "SELECT course_id FROM training_courses WHERE tenant_id = %s AND title = %s",
+                (tenant, "冷凝管安装与检验（演示）"),
             ).fetchone()
-            if doc is None:
-                result = ingest_document(
-                    conn,
-                    uuid.UUID(str(tenant)),
-                    IngestionRequest(
-                        source_id="demo-training-qual",
-                        filename="training.md",
-                        content=content,
-                        knowledge_key="demo-training-qual",
-                        title="冷凝管安装与检验（培训）",
-                        domain="training",
-                        owner_department="hr",
-                        classification=1,
-                        audience="internal",
-                        required_scope="internal_training",
-                        acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}, "deny": {}}),
-                        actor_id=uuid.UUID(str(principal)),
-                    ),
-                )
-                review = ReviewService(conn, uuid.UUID(str(tenant)))
-                review.pass_review(result.version_id, uuid.UUID(str(principal)))
-                review.approve_internal(result.version_id, uuid.UUID(str(principal)))
-                conn.commit()
-                version_id = result.version_id
-            else:
-                latest = conn.execute(
-                    "SELECT id FROM knowledge_versions WHERE tenant_id = %s AND document_id = %s"
-                    " ORDER BY version_no DESC LIMIT 1",
-                    (tenant, doc[0]),
+            if existing_course is None:
+                content = _TRAINING_TEXT.encode()
+                doc = conn.execute(
+                    "SELECT id FROM knowledge_documents WHERE tenant_id = %s AND knowledge_key = %s",
+                    (tenant, "demo-training-qual"),
                 ).fetchone()
-                assert latest is not None
-                version_id = latest[0]
-            role_id = training.ensure_role("installer", "安装工")
-            course_id = training.create_course(role_id=role_id, title="冷凝管安装与检验（演示）")
-            training.add_source(course_id, version_id)
-            training.create_question(
-                course_id=course_id,
-                course_version=1,
-                question_type="SINGLE_CHOICE",
-                prompt="气密性测试的保压时间是多少？",
-                answer_key={"correct": "60 秒"},
-                evidence_refs=[],
-                status="APPROVED",
-            )
-            training.publish_course(course_id)
-            # 学员身份取**令牌 sub**（与 _issue_token 的构造一致），否则学员看不到任务
-            training.assign(
-                course_id=course_id,
-                learner_subject_id=f"{str(principal)[:8]}@demo.local",
-            )
-            conn.commit()
+                if doc is None:
+                    result = ingest_document(
+                        conn,
+                        uuid.UUID(str(tenant)),
+                        IngestionRequest(
+                            source_id="demo-training-qual",
+                            filename="training.md",
+                            content=content,
+                            knowledge_key="demo-training-qual",
+                            title="冷凝管安装与检验（培训）",
+                            domain="training",
+                            owner_department="hr",
+                            classification=1,
+                            audience="internal",
+                            required_scope="internal_training",
+                            acl_policy=AclPolicy.from_json({"allow": {"roles": ["staff"]}, "deny": {}}),
+                            actor_id=uuid.UUID(str(principal)),
+                        ),
+                    )
+                    review = ReviewService(conn, uuid.UUID(str(tenant)))
+                    review.pass_review(result.version_id, uuid.UUID(str(principal)))
+                    review.approve_internal(result.version_id, uuid.UUID(str(principal)))
+                    conn.commit()
+                    version_id = result.version_id
+                else:
+                    latest = conn.execute(
+                        "SELECT id FROM knowledge_versions WHERE tenant_id = %s AND document_id = %s"
+                        " ORDER BY version_no DESC LIMIT 1",
+                        (tenant, doc[0]),
+                    ).fetchone()
+                    assert latest is not None
+                    version_id = latest[0]
+                role_id = training.ensure_role("installer", "安装工")
+                course_id = training.create_course(role_id=role_id, title="冷凝管安装与检验（演示）")
+                training.add_source(course_id, version_id)
+                training.create_question(
+                    course_id=course_id,
+                    course_version=1,
+                    question_type="SINGLE_CHOICE",
+                    prompt="气密性测试的保压时间是多少？",
+                    answer_key={"correct": "60 秒"},
+                    evidence_refs=[],
+                    status="APPROVED",
+                )
+                training.publish_course(course_id)
+                # 学员身份取**令牌 sub**（与 _issue_token 的构造一致），否则学员看不到任务
+                training.assign(
+                    course_id=course_id,
+                    learner_subject_id=f"{str(principal)[:8]}@demo.local",
+                )
+                conn.commit()
+
 
         stats = {
             "tenant": str(tenant),
@@ -439,6 +443,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "provider": self.provider,
                 # 经验采集页需要"当前演示身份"作为受访者（授权只允许本人）
                 "subject": self.stats.get("subject"),
+                "tenant_id": self.stats.get("tenant"),
+                "principal_id": self.stats.get("principal"),
             }
             self._send(200, json.dumps(body, ensure_ascii=False).encode(), "application/json")
             return
@@ -584,6 +590,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="qwen3:14b")
     parser.add_argument("--secret", default="demo-jwt-secret-0123456789abcdef")
     parser.add_argument("--user", default="demo")
+    parser.add_argument(
+        "--skip-training-seed",
+        action="store_true",
+        help="不播种工厂培训演示语料（供非工厂实例使用）",
+    )
     args = parser.parse_args(argv)
 
     corpus = Path(args.corpus)
@@ -595,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     dsn = ensure_postgres(pgdata, args.db_port)
     print(f"[demo] 数据库 {dsn}")
     _apply_migrations(dsn)
-    stats = _seed(dsn, corpus, args.user)
+    stats = _seed(dsn, corpus, args.user, skip_training_seed=args.skip_training_seed)
     print(f"[demo] 播种完成：{stats}")
 
     internal_token = _issue_token(args.secret, stats["tenant"], stats["principal"])

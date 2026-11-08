@@ -69,7 +69,38 @@ uv sync
 **没有改动的部分**：检索（词法/混合/目录精确）、可见性谓词、引用与证据、撤销与索引闸门、
 培训/访谈链路、审计与 outbox。差异全在"配置 + 导入的资料 + 接入的 Agent 身份"。
 
-## 3. 验收结果（`test_two_instances.py`）
+## 2a. 双实例实机验收（2026-11-08，真实进程）
+
+**两套实例同时在跑（同一提交 `b4d093a` + 本轮代码）**：
+
+| | 实例 A（工厂） | 实例 B（烘焙设备） |
+|---|---|---|
+| 启动 | 已长期运行的演示实例（`.demo-pgdata`） | `instance-up.ps1 -Name roaster -PgData .instance-roaster -DbPort 55462 -ApiPort 8104 -UiPort 8114 -Corpus _corpus_roaster/roaster_catalog.md -SkipTrainingSeed` |
+| 迁移 | 33 个 | **33 个（新库从零迁移）** |
+| 资料 | 工厂目录 + 检验规范 + 培训 | **只有 `_corpus_roaster/roaster_catalog.md`（4 chunks / 2 目录条目）** |
+| tenant | `f101e87c-…` | `085f023e-…` |
+| subject | `648b7644@demo.local` | `f53f141e@demo.local` |
+
+**最小权限 Agent 令牌**：`scope=[knowledge.answer, knowledge.search, evidence.read]`，
+`allowed_scopes=[internal_product]`（其余 scope 一律不给；两实例各自用自己的密钥签发）。
+
+实测输出（`_evidence/two_instances_live.txt`，脚本 `scripts/two_instance_acceptance.py`）：
+
+```
+A_answer            200 ANSWERED "A112420 的单价为 39.00（CNY）…"  citations=1
+B_answer            200 ANSWERED "烘焙机银皮收集盒每烘焙 50 锅清理一次…"  citations=1
+B_factory_question  200 REFUSED        ← B 没有工厂资料
+A_token_on_B        401 UNAUTHENTICATED
+B_token_on_A        401 UNAUTHENTICATED
+A_revoke            200（撤销 A 的目录版本）
+A_after_revoke      200 REFUSED        ← 单边撤销立刻生效
+B_after_A_revoke    200 ANSWERED       ← B 完全不受影响
+verdict             pass=true
+```
+
+> 复现命令：`uv run python scripts/two_instance_acceptance.py`（需要两套实例分别在 8000/8010 与 8104/8114 运行）。
+
+## 3. 验收结果（`test_two_instances.py`，自动化）
 
 | 场景 | 结果 |
 |---|---|

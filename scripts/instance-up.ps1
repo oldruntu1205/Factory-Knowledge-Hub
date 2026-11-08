@@ -18,7 +18,8 @@ param(
   [string]$Provider = "ollama",
   [string]$Model = "qwen3:14b",
   [string]$Corpus = "_corpus/catalog_2023.md",
-  [string]$Secret = ""
+  [string]$Secret = "",
+  [switch]$SkipTrainingSeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,18 +44,20 @@ Write-Host "[instance:$Name] pgdata=$PgData db=$DbPort api=$ApiPort ui=$UiPort"
 $log = Join-Path $logDir "run.log"
 $err = Join-Path $logDir "run.err"
 
-Start-Process -FilePath ".\.venv\Scripts\python.exe" `
-  -ArgumentList @(
-    "-u", "-m", "fkh.tools.demo_app",
-    "--pgdata", $PgData,
-    "--db-port", "$DbPort",
-    "--api-port", "$ApiPort",
-    "--ui-port", "$UiPort",
-    "--provider", $Provider,
-    "--model", $Model,
-    "--corpus", $Corpus,
-    "--secret", $Secret
-  ) `
+$argList = @(
+  "-u", "-m", "fkh.tools.demo_app",
+  "--pgdata", $PgData,
+  "--db-port", "$DbPort",
+  "--api-port", "$ApiPort",
+  "--ui-port", "$UiPort",
+  "--provider", $Provider,
+  "--model", $Model,
+  "--corpus", $Corpus,
+  "--secret", $Secret
+)
+if ($SkipTrainingSeed) { $argList += "--skip-training-seed" }
+
+Start-Process -FilePath ".\.venv\Scripts\python.exe" -ArgumentList $argList `
   -RedirectStandardOutput $log `
   -RedirectStandardError $err `
   -WindowStyle Hidden | Out-Null
