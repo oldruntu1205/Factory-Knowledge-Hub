@@ -46,3 +46,4 @@ fkh-bench-pgdata/
 .verify-*-pgdata/
 .demo-pgdata/
 .tmp-pgdata/
+.instance-*/
