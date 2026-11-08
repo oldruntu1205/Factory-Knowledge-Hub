@@ -36,6 +36,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import psycopg
 
+from fkh.tools import winacl
 from fkh.tools.pg import ensure_postgres, pg_bin, postgres_status, run_pg, stop_postgres
 
 SCHEMA_VERSION = 1
@@ -84,17 +87,41 @@ def _write_instance(workdir: Path, data: dict[str, Any]) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def harden_secrets(workdir: Path) -> list[str]:
+    """把 `secrets/` 目录与其中每个密钥文件收紧到「仅当前账户」。
+
+    Windows 上 `chmod 0600` 不改变 DACL；如果只做 chmod，普通账户仍能读到密钥。
+    这里先收紧目录、再收紧文件，任何一步不达标都会抛错，调用方不得继续启动。
+    """
+    secret_dir = workdir / "secrets"
+    if not secret_dir.exists():
+        raise SystemExit(f"缺少密钥目录：{secret_dir}")
+    winacl.tighten(secret_dir, directory=True)
+    hardened: list[str] = []
+    for path in sorted(secret_dir.iterdir()):
+        if path.is_file():
+            winacl.tighten(path, directory=False)
+            hardened.append(str(path))
+    return hardened
+
+
 def _write_secret(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 先收紧目录：文件创建时会继承目录的 DACL，保证"写入时"就不对普通账户开放，
+    # 而不是等写完再补救（中间窗口同样会泄露密钥）。
+    winacl.tighten(path.parent, directory=True)
     path.write_text(value + "\n", encoding="utf-8")
     with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
+    winacl.tighten(path, directory=False)
 
 
 def _read_secret(workdir: Path, kind: str, *, validate: bool = True) -> str:
     path = secret_path(workdir, kind)
     if not path.exists():
         raise SystemExit(f"缺少实例密钥文件：{path}（实例损坏或被手工删除，拒绝启动）")
+    # 读取前自愈：老实例可能只有 chmod。若当前账户不是所有者，这里会失败并拒绝启动。
+    winacl.tighten(path, directory=False)
     value = path.read_text(encoding="utf-8").strip()
     if validate:
         if len(value) < MIN_SECRET_LEN:
@@ -167,17 +194,156 @@ def _refuse_if_busy(port: int, *, what: str) -> None:
     )
 
 
-def _pid_matches(pid: int, needles: tuple[str, ...]) -> tuple[bool, str]:
+def _args_have_port(args: list[str], port: int) -> bool:
+    """命令行是否显式带 `--port <port>`（避免把路径里的数字误当端口）。"""
+    expected = str(port)
+    for index, token in enumerate(args):
+        if token in {"--port", "-p"} and index + 1 < len(args) and args[index + 1] == expected:
+            return True
+        if token in {f"--port={expected}", f"-p{expected}"}:
+            return True
+    return False
+
+
+def _is_this_app(args: list[str]) -> bool:
+    normalized = [item.replace("\\", "/") for item in args]
+    return any("uvicorn" in item for item in normalized) and any(
+        "fkh.api.main:app" in item for item in normalized
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessVerdict:
+    pid: int
+    state: str  # absent / ours / foreign / denied
+    cmdline: str
+    create_time: float | None = None
+
+
+def _env_matches_instance(proc: Any, *, db_port: int, db_name: str) -> bool | None:
+    """用子进程环境里的 FKH_DATABASE_URL 证明它连的是本实例的库。
+
+    旧 pid 文件（纯整数）没有 nonce，不能只凭"同 app + 同端口"放行——同机上
+    另一个用同一份代码/同租户的实例也可能命中。数据库端口 + 库名是本实例独有的。
+    返回 None 表示环境不可读（无法证明，调用方应拒绝）。
+    """
     import psutil
 
-    with contextlib.suppress(Exception):
+    try:
+        env = proc.environ()
+    except (psutil.AccessDenied, OSError):
+        return None
+    value = env.get("FKH_DATABASE_URL")
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return port == db_port and (parsed.path or "").lstrip("/") == db_name
+
+
+def _classify_api_process(
+    pid: int, *, api_port: int, db_port: int, db_name: str, nonce: str | None = None
+) -> _ProcessVerdict:
+    """判定 pid 是否**本实例的 API 进程**。
+
+    - `absent`：进程已不存在（pid 文件是上次异常退出留下的）；
+    - `ours`：身份可证（nonce + 本 app + 本库，或旧的 app/端口/监听者 + 本库）；
+    - `foreign`：进程存在但不是本实例（**绝不终止**）；
+    - `denied`：无权限读取，无法证明身份（保守拒绝）。
+
+    为什么不再用「命令行包含 uvicorn 就算本实例」：另一个 uvicorn 服务
+    （别的项目、别的端口）同样含 uvicorn，旧判定会把别人的服务杀掉。
+    """
+    import psutil
+
+    try:
         proc = psutil.Process(pid)
-        cmdline = " ".join(proc.cmdline()).replace("\\", "/")
-        for needle in needles:
-            if needle.replace("\\", "/") in cmdline:
-                return True, cmdline
-        return False, cmdline
-    return False, "进程不存在或无权限读取"
+        if not proc.is_running():
+            return _ProcessVerdict(pid, "absent", "")
+        args = proc.cmdline()
+        create_time = float(proc.create_time())
+    except psutil.NoSuchProcess:
+        return _ProcessVerdict(pid, "absent", "")
+    except psutil.AccessDenied:
+        return _ProcessVerdict(pid, "denied", "无权限读取进程信息")
+
+    normalized = [item.replace("\\", "/") for item in args]
+    cmdline = " ".join(normalized)
+    is_this_app = _is_this_app(args)
+
+    if nonce:
+        # 新格式：nonce 必须可读且命中；不命中/不可读一律不猜。
+        try:
+            env_nonce = proc.environ().get("FKH_INSTANCE_PID_NONCE")
+        except (psutil.AccessDenied, OSError):
+            return _ProcessVerdict(pid, "denied", "无权限读取进程环境（nonce 不可证）")
+        if env_nonce != nonce or not is_this_app:
+            return _ProcessVerdict(pid, "foreign", cmdline)
+        if _env_matches_instance(proc, db_port=db_port, db_name=db_name) is not True:
+            return _ProcessVerdict(pid, "foreign", cmdline)
+        return _ProcessVerdict(pid, "ours", cmdline, create_time)
+
+    if not (is_this_app and _args_have_port(normalized, api_port)):
+        return _ProcessVerdict(pid, "foreign", cmdline)
+    env_match = _env_matches_instance(proc, db_port=db_port, db_name=db_name)
+    if env_match is None:
+        return _ProcessVerdict(pid, "denied", "无权限读取进程环境（实例库不可证）")
+    if not env_match:
+        return _ProcessVerdict(pid, "foreign", cmdline)
+
+    owner = port_owner(api_port)
+    if owner is None:
+        return _ProcessVerdict(pid, "foreign", f"{cmdline} [端口 {api_port} 当前无监听者]")
+    if owner.get("pid") == pid:
+        return _ProcessVerdict(pid, "ours", cmdline, create_time)
+    # `.venv\Scripts\python.exe` 这类启动器会再起一个真实解释器子进程，
+    # 监听端口的是子进程。允许 pid 是"本实例监听者的父进程"，但监听者本身
+    # 也必须是本 app（否则就是不认识的进程占着端口）。
+    try:
+        listener_args = psutil.Process(owner["pid"]).cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return _ProcessVerdict(
+            pid, "foreign", f"{cmdline} [端口 {api_port} 的监听者: {owner}]"
+        )
+    if _is_this_app(listener_args):
+        with contextlib.suppress(psutil.Error):
+            child_parents = {parent.pid for parent in psutil.Process(owner["pid"]).parents()}
+            if pid in child_parents:
+                return _ProcessVerdict(pid, "ours", cmdline, create_time)
+    return _ProcessVerdict(pid, "foreign", f"{cmdline} [端口 {api_port} 的监听者: {owner}]")
+
+
+def _read_pid_file(path: Path) -> dict[str, Any]:
+    """读取 pid 文件；兼容旧的纯整数格式。"""
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {"pid": 0, "nonce": None, "launcher_pid": None, "workdir": ""}
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"pid 文件内容非法：{path}") from exc
+        if not isinstance(data, dict):
+            raise SystemExit(f"pid 文件内容非法：{path}")
+        try:
+            pid = int(data.get("pid") or 0)
+            launcher = int(data.get("launcher_pid") or 0)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"pid 文件内容非法：{path}") from exc
+        nonce = data.get("nonce")
+        return {
+            "pid": pid,
+            "nonce": str(nonce) if nonce else None,
+            "launcher_pid": launcher or None,
+            "workdir": str(data.get("workdir") or ""),
+        }
+    try:
+        return {"pid": int(raw), "nonce": None, "launcher_pid": None, "workdir": ""}
+    except ValueError as exc:
+        raise SystemExit(f"pid 文件内容非法：{path}") from exc
 
 
 # ---------------------------------------------------------------- 建库与角色
@@ -192,23 +358,56 @@ def _database_exists(admin_dsn: str, db_name: str) -> bool:
     return row is not None
 
 
-def _create_database(admin_dsn: str, db_name: str) -> None:
+def _create_database(
+    admin_dsn: str, db_name: str, *, on_created: Callable[[], None] | None = None
+) -> None:
     if _database_exists(admin_dsn, db_name):
         raise SystemExit(f"数据库 {db_name} 已存在；restore/provision 只接受全新隔离目标")
     _exec(admin_dsn, f'CREATE DATABASE "{db_name}"')
+    if on_created is not None:
+        on_created()
+
+
+def _role_exists(admin_dsn: str, role: str) -> bool:
+    with psycopg.connect(admin_dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+    return row is not None
 
 
 def _role_name(db_name: str) -> str:
     return f"fkh_app_{db_name.replace('fkh_', '')[:16]}"
 
 
-def _ensure_business_role(db_root_dsn: str, db_dsn: str, role: str, password: str) -> None:
-    """业务角色：LOGIN + 独立口令，非 owner、非 SUPERUSER、无 BYPASSRLS。"""
+def _ensure_business_role(
+    db_root_dsn: str,
+    db_dsn: str,
+    role: str,
+    password: str,
+    *,
+    on_created: Callable[[], None] | None = None,
+    require_new: bool = True,
+) -> bool:
+    """业务角色：LOGIN + 独立口令，非 owner、非 SUPERUSER、无 BYPASSRLS。
+
+    返回 `True` 表示角色由本次调用创建（失败清理只应删除本次创建的角色）。
+    `on_created` 在 `CREATE ROLE` 成功后**立即**回调：后续 GRANT 失败时，调用方
+    仍能知道"角色是本次创建的"并清理，而不是等函数返回。
+
+    `require_new=True`（默认）时，角色已存在直接拒绝：绝不能把 restore/provision
+    的目标角色误当成"可复用的旧角色"去改它的口令或授权。
+    """
     raise_if_exists = "SELECT 1 FROM pg_roles WHERE rolname = %s"
     with psycopg.connect(db_root_dsn, autocommit=True) as conn:
         existing = conn.execute(raise_if_exists, (role,)).fetchone()
-    if existing is None:
+    created = existing is None
+    if not created and require_new:
+        raise SystemExit(
+            f"角色 {role} 已存在；restore/provision 只接受全新目标，拒绝修改既有角色"
+        )
+    if created:
         _exec(db_root_dsn, f'CREATE ROLE "{role}" LOGIN')
+        if on_created is not None:
+            on_created()
     _exec(db_root_dsn, f'ALTER ROLE "{role}" PASSWORD {_sql_literal(password)}')
 
     with psycopg.connect(db_root_dsn, autocommit=True) as conn:
@@ -232,6 +431,7 @@ def _ensure_business_role(db_root_dsn: str, db_dsn: str, role: str, password: st
     ]
     for sql in grants:
         _exec(db_dsn, sql)
+    return created
 
 
 def _sql_literal(value: str) -> str:
@@ -374,6 +574,11 @@ def command_provision(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- 启动 / 停止
+def _domains_cover(expected: Iterable[str], actual: Iterable[str]) -> bool:
+    """重启身份探测：初始清单必须是实际清单的子集（自定义域是追加的）。"""
+    return set(expected) <= set(actual)
+
+
 def _identity_probe(record: dict[str, Any], secret: str) -> bool:
     """用本实例密钥签发令牌并读取域配置，确认应答者是**本实例**（旧服务不算）。"""
     import jwt
@@ -398,12 +603,17 @@ def _identity_probe(record: dict[str, Any], secret: str) -> bool:
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return False
     codes = {item["code"] for item in body.get("domains", [])}
-    return codes == set(record.get("domains", []))
+    # 自定义域是**追加**能力（POST /v1/config/domains），登记后数据库里的域
+    # 会比 instance.json 的初始清单多。这里只要求初始清单一仍是子集：
+    # 若用全等，登记自定义域后再重启会被误判成"应答者不是本实例"。
+    # 身份仍由「本实例密钥签发的令牌 + 该租户数据可见」共同证明：换实例必 401。
+    return _domains_cover(record.get("domains", []), codes)
 
 
 def command_serve(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
     record = load_instance(workdir)
+    harden_secrets(workdir)  # 先确认密钥目录/文件只有本账户可读（老实例自愈）
     secret = _read_secret(workdir, "jwt")  # 校验既有密钥（缺失/过短/占位直接拒绝）
     _refuse_if_busy(int(record["api_port"]), what="API")
 
@@ -412,6 +622,9 @@ def command_serve(args: argparse.Namespace) -> int:
         superuser_password=_read_secret(workdir, "db_admin"),
     )
 
+    # 进程身份随机串：只写进本次子进程环境与 pid 文件。
+    # stop 用它证明"这个 pid 就是本次 serve 起来的 API"，而不是另一个 uvicorn 服务。
+    pid_nonce = secrets.token_hex(16)
     env = dict(os.environ)
     env.update(
         {
@@ -419,6 +632,7 @@ def command_serve(args: argparse.Namespace) -> int:
             "FKH_DATABASE_URL": _dsn(record, kind="app"),  # 口令只在环境变量里，不进 argv
             "FKH_RETRIEVAL_HASH_KEY": secret[:32],
             "FKH_RETRIEVAL_HASH_KEY_ID": f"k-{record['name'][:8]}",
+            "FKH_INSTANCE_PID_NONCE": pid_nonce,
             "FKH_LOG_LEVEL": env.get("FKH_LOG_LEVEL", "info"),
         }
     )
@@ -450,57 +664,154 @@ def command_serve(args: argparse.Namespace) -> int:
         proc.terminate()
         raise SystemExit(f"API 未就绪或应答者不是本实例（端口 {record['api_port']}），日志：{log_path}")
 
-    owner = port_owner(int(record["api_port"]))
-    if owner is not None and owner["pid"] != proc.pid:
-        # psutil 可能残留已关闭 socket 的历史条目：只有"另一个**活着的、也跑本实例**的进程"才算冲突
-        import contextlib as _ctx
-
-        import psutil
-
-        alive_other = False
-        with _ctx.suppress(Exception):
-            other = psutil.Process(owner["pid"])
-            cmd = " ".join(other.cmdline()).replace("\\", "/")
-            alive_other = other.is_running() and workdir.as_posix() in cmd
-        if alive_other:
-            proc.terminate()
-            raise SystemExit(
-                f"端口 {record['api_port']} 已被另一个本实例进程占用（pid={owner['pid']}），"
-                "拒绝重复启动"
-            )
     if proc.poll() is not None:
         raise SystemExit(f"本次启动的 API 子进程已退出（code={proc.returncode}），日志：{log_path}")
 
-    (workdir / "api.pid").write_text(str(proc.pid), encoding="utf-8")
+    # `.venv\Scripts\python.exe` 是启动器，真正监听端口的是它的子进程；
+    # pid 文件必须记录**监听者**，否则 stop 会停掉启动器而把服务进程留在后台。
+    owner = port_owner(int(record["api_port"]))
+    listener_pid = proc.pid
+    if owner is not None and owner["pid"] != proc.pid:
+        verdict = _classify_api_process(
+            int(owner["pid"]),
+            api_port=int(record["api_port"]),
+            db_port=int(record["db_port"]),
+            db_name=str(record["db_name"]),
+            nonce=pid_nonce,
+        )
+        if verdict.state != "ours":
+            proc.terminate()
+            raise SystemExit(
+                f"API 端口 {record['api_port']} 的监听者不是本次启动的实例（pid={owner['pid']}）："
+                f"{verdict.cmdline[:160]}"
+            )
+        listener_pid = int(owner["pid"])
+
+    (workdir / "api.pid").write_text(
+        json.dumps(
+            {
+                "pid": listener_pid,
+                "launcher_pid": proc.pid if proc.pid != listener_pid else None,
+                "nonce": pid_nonce,
+                "api_port": int(record["api_port"]),
+                "workdir": str(workdir),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     print(json.dumps({"api": f"http://127.0.0.1:{record['api_port']}",
-                      "pid": proc.pid, "ready": True, "instance": record["name"]}))
+                      "pid": listener_pid, "ready": True, "instance": record["name"]}))
     return 0
+
+
+def _terminate_process(verdict: _ProcessVerdict) -> None:
+    """终止已被判定为 ours 的进程；再次核对 create_time，防止 PID 复用。
+
+    判定与终止之间如果原进程退出、系统把同一 PID 分配给别的进程，只按 pid
+    terminate 会杀错。create_time 是进程身份的一部分。
+    """
+    import psutil
+
+    if verdict.state != "ours" or verdict.create_time is None:
+        raise SystemExit(f"pid={verdict.pid} 未被证明属于本实例，拒绝终止")
+    try:
+        proc = psutil.Process(verdict.pid)
+        current_create_time = float(proc.create_time())
+    except psutil.NoSuchProcess:
+        return
+    except psutil.AccessDenied as exc:
+        raise SystemExit(f"pid={verdict.pid} 无权限复核进程身份，拒绝终止") from exc
+    if abs(current_create_time - verdict.create_time) > 0.01:
+        raise SystemExit(
+            f"pid={verdict.pid} 已被替换（create_time 变化），拒绝终止新的进程"
+        )
+    try:
+        proc.terminate()
+    except psutil.NoSuchProcess:
+        return  # 复核后自行退出：已经是目标结果
+    except psutil.AccessDenied as exc:
+        raise SystemExit(f"pid={verdict.pid} 无权限终止，拒绝继续") from exc
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=20)
+    if proc.is_running():
+        try:
+            proc.kill()
+        except psutil.NoSuchProcess:
+            return
+        except psutil.AccessDenied as exc:
+            raise SystemExit(f"pid={verdict.pid} 无权限强制终止，拒绝继续") from exc
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
 
 
 def command_stop(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
     record = load_instance(workdir)
+    api_port = int(record["api_port"])
+    db_port = int(record["db_port"])
+    db_name = str(record["db_name"])
     pid_file = workdir / "api.pid"
     stopped_api = False
     if pid_file.exists():
-        pid = int(pid_file.read_text(encoding="utf-8").strip() or 0)
-        if pid:
-            matched, cmdline = _pid_matches(
-                pid, ("uvicorn", str(record["api_port"]), workdir.as_posix())
+        info = _read_pid_file(pid_file)
+        pid = int(info["pid"] or 0)
+        nonce = info["nonce"]
+        launcher_pid = int(info["launcher_pid"] or 0)
+        recorded_workdir = str(info["workdir"] or "")
+        if recorded_workdir and Path(recorded_workdir).resolve() != workdir:
+            raise SystemExit(
+                f"pid 文件记录的实例目录是 {recorded_workdir}，不是 {workdir}；拒绝停止"
             )
-            if not matched:
-                raise SystemExit(
-                    f"pid={pid} 不是本实例的 API 进程（cmdline={cmdline[:160]}），拒绝停止"
-                )
-            import psutil
 
-            proc = psutil.Process(pid)
-            proc.terminate()
-            with contextlib.suppress(Exception):
-                proc.wait(timeout=20)
-            if proc.is_running():
-                proc.kill()
-            stopped_api = True
+        targets: list[_ProcessVerdict] = []
+
+        def add(verdict: _ProcessVerdict) -> None:
+            if verdict.state == "ours" and all(item.pid != verdict.pid for item in targets):
+                targets.append(verdict)
+
+        if pid:
+            verdict = _classify_api_process(
+                pid, api_port=api_port, db_port=db_port, db_name=db_name, nonce=nonce
+            )
+            if verdict.state in {"foreign", "denied"}:
+                detail = verdict.cmdline[:200] or "无法读取命令行"
+                raise SystemExit(
+                    f"pid={pid} 不是本实例的 API 进程（{detail}），拒绝停止"
+                )
+            add(verdict)
+            # state == absent：进程已不在，pid 文件是上次异常退出的残留，继续核验监听者
+
+        # 监听者是"本实例是否还在服务"的直接证据；pid 文件丢失/陈旧时也要检查。
+        owner = port_owner(api_port)
+        if owner is not None:
+            owner_verdict = _classify_api_process(
+                int(owner["pid"]),
+                api_port=api_port,
+                db_port=db_port,
+                db_name=db_name,
+                nonce=nonce,
+            )
+            if owner_verdict.state != "ours":
+                raise SystemExit(
+                    f"API 端口 {api_port} 的监听者无法确认为本实例（pid={owner['pid']}），"
+                    "拒绝停止"
+                )
+            # 监听者优先终止，避免启动器先退出后留下孤儿
+            if all(item.pid != owner_verdict.pid for item in targets):
+                targets.insert(0, owner_verdict)
+
+        if launcher_pid and launcher_pid not in {item.pid for item in targets}:
+            launcher_verdict = _classify_api_process(
+                launcher_pid, api_port=api_port, db_port=db_port, db_name=db_name, nonce=nonce
+            )
+            # 启动器可能已被回收/复用；它只作为附加清理项，foreign 时不动它。
+            if launcher_verdict.state == "ours":
+                add(launcher_verdict)
+
+        for target in targets:
+            _terminate_process(target)
+        stopped_api = bool(targets)
         pid_file.unlink(missing_ok=True)
     if stopped_api:
         deadline = time.time() + 20
@@ -562,16 +873,86 @@ def _conn_args(dsn: str) -> tuple[list[str], str]:
     return args, (parsed.path or "/postgres").lstrip("/")
 
 
+def _cleanup_restore(
+    *,
+    workdir: Path,
+    pgdata: Path,
+    root_dsn: str | None,
+    db_name: str,
+    role: str,
+    created_db: bool,
+    created_role: bool,
+    db_creation_attempted: bool,
+    role_creation_attempted: bool,
+    created_pgdata: bool,
+    created_secrets: bool,
+    instance_written: bool,
+    workdir_created: bool,
+) -> list[str]:
+    """尽力撤销本次 restore 创建的资源；返回未能清理的项（不覆盖原始异常）。
+
+    每个资源独立尝试；只把"资源不存在"视为正常。清理失败不 raise，由调用方
+    打印/附注到原始异常上，避免"清理失败盖掉真正的失败原因"。
+    """
+    failures: list[str] = []
+
+    def attempt(label: str, action: Callable[[], None]) -> None:
+        try:
+            action()
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # noqa: BLE001 - 清理必须继续尝试其余资源
+            failures.append(f"{label}: {type(exc).__name__}: {exc}")
+
+    if root_dsn is not None and created_db:
+        attempt(
+            "drop database",
+            lambda: _exec(root_dsn, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'),
+        )
+    if root_dsn is not None and created_role:
+        attempt("drop role", lambda: _exec(root_dsn, f'DROP ROLE IF EXISTS "{role}"'))
+    # DDL 已发出但客户端没拿到结果（连接中断等）：数据库/角色可能已在服务端创建。
+    # 此时不能仅凭名字删除（可能是并发创建/既有对象），只报告待人工核查。
+    if db_creation_attempted and not created_db:
+        failures.append(
+            f"database {db_name} 创建结果未确认（可能已创建）；"
+            "未自动删除，请人工核查"
+        )
+    if role_creation_attempted and not created_role:
+        failures.append(
+            f"role {role} 创建结果未确认（可能已创建）；未自动删除，请人工核查"
+        )
+    if created_pgdata and pgdata.exists():
+        attempt("stop postgres", lambda: stop_postgres(pgdata))
+        attempt("remove pgdata", lambda: shutil.rmtree(pgdata))
+    if created_secrets:
+        attempt("remove secrets", lambda: shutil.rmtree(workdir / "secrets"))
+    if instance_written:
+        attempt("remove instance.json", lambda: instance_path(workdir).unlink())
+    if workdir_created:
+        try:
+            workdir.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failures.append(f"remove workdir（非空则保留）: {type(exc).__name__}: {exc}")
+    return failures
+
+
 def command_restore(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
     dump = Path(args.from_dump).resolve()
     if not dump.exists():
         raise SystemExit(f"备份文件不存在：{dump}")
-    if instance_path(workdir).exists():
-        raise SystemExit(f"目标已是一个实例（{instance_path(workdir)}），restore 只接受全新隔离目标")
-    pgdata = (workdir / "pgdata").resolve()
-    if pgdata.exists() and any(pgdata.iterdir()):
-        raise SystemExit(f"目标数据目录非空：{pgdata}，restore 只接受全新隔离目标")
+    if workdir.exists():
+        if not workdir.is_dir():
+            raise SystemExit(f"目标不是目录：{workdir}；restore 只接受全新目录")
+        if any(workdir.iterdir()):
+            raise SystemExit(
+                f"目标目录非空：{workdir}；restore 只接受全新目录（不存在或为空目录）"
+            )
+    # 记录"目录由谁创建"：失败清理只删除本次创建的资源，不动调用方预先建好的空目录。
+    workdir_created = not workdir.exists()
     _refuse_if_busy(args.api_port, what="API")
     _refuse_if_busy(args.db_port, what="DB")
 
@@ -580,19 +961,54 @@ def command_restore(args: argparse.Namespace) -> int:
         raise SystemExit(f"备份文件不可读，拒绝恢复：\n{listed.stdout}\n{listed.stderr}")
 
     workdir.mkdir(parents=True, exist_ok=True)
+    pgdata = (workdir / "pgdata").resolve()
+    created_pgdata = not pgdata.exists()
+    created_secrets = not (workdir / "secrets").exists()
+    instance_written = False
     admin_pw, app_pw = _new_secret(), _new_secret()
-    _write_secret(secret_path(workdir, "db_admin"), admin_pw)
-    _write_secret(secret_path(workdir, "db_app"), app_pw)
 
-    root_dsn = ensure_postgres(pgdata, args.db_port, superuser_password=admin_pw)
-    db_dsn = urlunparse(urlparse(root_dsn)._replace(path="/" + args.db_name))
+    root_dsn: str | None = None
+    created_db = False
+    created_role = False
+    db_creation_attempted = False
+    role_creation_attempted = False
     role = _role_name(args.db_name)
 
-    created_db = False
-    try:
-        _create_database(root_dsn, args.db_name)
+    def _mark_db_created() -> None:
+        nonlocal created_db
         created_db = True
-        _ensure_business_role(root_dsn, db_dsn, role, app_pw)
+
+    def _mark_role_created() -> None:
+        nonlocal created_role
+        created_role = True
+
+    try:
+        _write_secret(secret_path(workdir, "db_admin"), admin_pw)
+        _write_secret(secret_path(workdir, "db_app"), app_pw)
+        root_dsn = ensure_postgres(pgdata, args.db_port, superuser_password=admin_pw)
+        db_dsn = urlunparse(urlparse(root_dsn)._replace(path="/" + args.db_name))
+        if _database_exists(root_dsn, args.db_name):
+            raise SystemExit(f"数据库 {args.db_name} 已存在；restore 只接受全新隔离目标")
+        db_creation_attempted = True
+        try:
+            _create_database(root_dsn, args.db_name, on_created=_mark_db_created)
+        except SystemExit:
+            # `_create_database` 的 SystemExit 只表示"库已存在"（不是本次创建）。
+            db_creation_attempted = False
+            raise
+        if _role_exists(root_dsn, role):
+            # 恢复只接受全新目标：角色若已存在，可能属于别的实例，不能改它的口令。
+            raise SystemExit(f"角色 {role} 已存在；restore 只接受全新隔离目标")
+        role_creation_attempted = True
+        try:
+            _ensure_business_role(
+                root_dsn, db_dsn, role, app_pw,
+                on_created=_mark_role_created, require_new=True,
+            )
+        except SystemExit:
+            # 同上：角色已存在（竞态）不是本次创建。
+            role_creation_attempted = False
+            raise
         conn_args, db_name = _conn_args(db_dsn)
         restored = _run_pg_with_password(
             [str(pg_bin() / "pg_restore.exe"), *conn_args,
@@ -638,19 +1054,41 @@ def command_restore(args: argparse.Namespace) -> int:
             "agent_principal": next((str(p[0]) for p in principals if str(p[1]) == "agent"), None),
         }
         _assert_auth_isolation(record)
+        instance_written = True  # 先登记：write_text 中途失败也要清掉半写的 instance.json
         _write_instance(workdir, record)
-    except BaseException:
-        # 半恢复清理：删库、停库、清掉目标目录，保证不留下可运行的半成品
-        with contextlib.suppress(Exception):
-            if created_db:
-                _exec(root_dsn, f'DROP DATABASE IF EXISTS "{args.db_name}" WITH (FORCE)')
-        with contextlib.suppress(Exception):
-            stop_postgres(pgdata)
-        with contextlib.suppress(Exception):
-            shutil.rmtree(workdir)
+    except BaseException as exc:
+        # 半恢复清理：只撤销**本次**创建的库/角色/目录，不动目标目录里原本就有的东西。
+        failures = _cleanup_restore(
+            workdir=workdir,
+            pgdata=pgdata,
+            root_dsn=root_dsn,
+            db_name=args.db_name,
+            role=role,
+            created_db=created_db,
+            created_role=created_role,
+            db_creation_attempted=db_creation_attempted,
+            role_creation_attempted=role_creation_attempted,
+            created_pgdata=created_pgdata,
+            created_secrets=created_secrets,
+            instance_written=instance_written,
+            workdir_created=workdir_created,
+        )
+        for failure in failures:
+            print(f"restore 清理未完成：{failure}", file=sys.stderr)
+            if hasattr(exc, "add_note"):
+                exc.add_note(f"restore 清理未完成：{failure}")
         raise
 
     print(json.dumps({**record, "admin_dsn": _masked(_dsn(record))}, ensure_ascii=False))
+    return 0
+
+
+def command_harden_secrets(args: argparse.Namespace) -> int:
+    """重新收紧既有实例的 secrets/（用于旧实例升级到 DACL 保护）。"""
+    workdir = Path(args.workdir).resolve()
+    hardened = harden_secrets(workdir)
+    print(json.dumps({"hardened": True, "secret_dir": str(workdir / "secrets"),
+                      "files": hardened}, ensure_ascii=False))
     return 0
 
 
@@ -735,6 +1173,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--db-name", required=True)
     restore.add_argument("--name", default="restored")
     restore.set_defaults(func=command_restore)
+
+    harden_cmd = sub.add_parser(
+        "harden-secrets", help="把既有实例的 secrets/ 收紧为仅当前账户可读（Windows DACL）"
+    )
+    harden_cmd.add_argument("--workdir", required=True)
+    harden_cmd.set_defaults(func=command_harden_secrets)
 
     status = sub.add_parser("status", help="查看实例数据面（计数/版本/角色权限）")
     status.add_argument("--workdir", required=True)

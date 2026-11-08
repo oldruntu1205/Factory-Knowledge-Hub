@@ -22,11 +22,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlunparse
 
 import jwt
 
@@ -79,7 +81,11 @@ def step(name: str, ok: bool, detail: str = "") -> None:
 
 
 def run(
-    args: list[str], *, timeout: int = 900, env_extra: dict[str, str] | None = None
+    args: list[str],
+    *,
+    timeout: int = 900,
+    env_extra: dict[str, str] | None = None,
+    expect_fail: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     env = None
     if env_extra:
@@ -95,7 +101,7 @@ def run(
             "out": (result.stdout or "").strip().splitlines()[-1:] if result.stdout else [],
         }
     )
-    if result.returncode != 0:
+    if result.returncode != 0 and not expect_fail:
         print(result.stdout, file=sys.stderr)
         print(result.stderr, file=sys.stderr)
         raise SystemExit(f"命令失败（{result.returncode}）：{' '.join(args)}")
@@ -199,9 +205,21 @@ def answer(record: dict[str, Any], token: str, query: str) -> dict[str, Any]:
     return payload
 
 
-def provision(cfg: dict[str, Any]) -> dict[str, Any]:
+def clean_workdir(cfg: dict[str, Any]) -> None:
+    """停掉上次中断残留的实例，再清空目录（可复跑）。"""
+    if (cfg["workdir"] / "instance.json").exists():
+        run(
+            [sys.executable, "-m", "fkh.tools.instance", "stop",
+             "--workdir", str(cfg["workdir"])],
+            expect_fail=True,
+        )
+        time.sleep(1)
     if cfg["workdir"].exists():
         shutil.rmtree(cfg["workdir"])
+
+
+def provision(cfg: dict[str, Any]) -> dict[str, Any]:
+    clean_workdir(cfg)
     run([
         sys.executable, "-m", "fkh.tools.instance", "provision",
         "--workdir", str(cfg["workdir"]),
@@ -211,6 +229,26 @@ def provision(cfg: dict[str, Any]) -> dict[str, Any]:
         "--name", cfg["name"],
     ])
     return json.loads((cfg["workdir"] / "instance.json").read_text(encoding="utf-8"))
+
+
+def secret(workdir: Path, kind: str) -> str:
+    """从实例 secrets/ 读取密钥（instance.json 不再保存任何密钥/口令）。"""
+    names = {"jwt": "jwt.secret", "db_admin": "db-admin.password", "db_app": "db-app.password"}
+    return (workdir / "secrets" / names[kind]).read_text(encoding="utf-8").strip()
+
+
+def dsn(record: dict[str, Any], *, app: bool) -> str:
+    workdir = Path(record["workdir"])
+    user = record["app_role"] if app else record["admin_user"]
+    password = secret(workdir, "db_app" if app else "db_admin")
+    return urlunparse(
+        (
+            "postgresql",
+            f"{quote(user, safe='')}:{quote(password, safe='')}@127.0.0.1:{record['db_port']}",
+            "/" + record["db_name"],
+            "", "", "",
+        )
+    )
 
 
 def serve(cfg: dict[str, Any]) -> None:
@@ -264,14 +302,14 @@ def main() -> int:
     # ---------- ① 空环境首装 ----------
     record_a = provision(A)
     step("provision-a", True, f"db_port={A['db_port']} api_port={A['api_port']}")
-    flags = role_flags(record_a["app_dsn"])
+    flags = role_flags(dsn(record_a, app=True))
     step("app-role-minimal", not flags["rolsuper"] and not flags["rolbypassrls"]
          and flags["role"] != flags["table_owner"],
          json.dumps(flags, ensure_ascii=False))
     serve(A)
     step("serve-a", True, f"http://127.0.0.1:{A['api_port']}")
 
-    secret_a = str(record_a["jwt_secret"])
+    secret_a = secret(A["workdir"], "jwt")
     ops_a = mint(secret_a, record_a, principal=record_a["ops_principal"], scopes=OPS_SCOPES)
     agent_a = mint(secret_a, record_a, principal=record_a["agent_principal"], scopes=AGENT_SCOPES)
 
@@ -359,17 +397,18 @@ def main() -> int:
          "--workdir", str(A["workdir"]), "--out", str(backup_path)])
     step("backup", backup_path.exists(), f"{backup_path.stat().st_size} bytes")
 
+    clean_workdir(B)
     run([sys.executable, "-m", "fkh.tools.instance", "restore",
          "--from", str(backup_path), "--workdir", str(B["workdir"]),
          "--db-port", str(B["db_port"]), "--api-port", str(B["api_port"]),
          "--db-name", B["db_name"], "--name", B["name"]])
     record_b = json.loads((B["workdir"] / "instance.json").read_text(encoding="utf-8"))
     step("restore-new-instance",
-         record_b["jwt_secret"] != record_a["jwt_secret"],
+         secret(B["workdir"], "jwt") != secret(A["workdir"], "jwt"),
          f"db_port={B['db_port']} api_port={B['api_port']} secret=新生成")
     serve(B)
 
-    secret_b = str(record_b["jwt_secret"])
+    secret_b = secret(B["workdir"], "jwt")
     ops_b = mint(secret_b, record_b, principal=record_b["ops_principal"], scopes=OPS_SCOPES)
     agent_b = mint(secret_b, record_b, principal=record_b["agent_principal"], scopes=AGENT_SCOPES)
     # 恢复实例的管理令牌用于读取域配置，确认配置随数据库一起恢复
@@ -409,7 +448,7 @@ def main() -> int:
 
     import psycopg
 
-    with psycopg.connect(record_b["admin_dsn"]) as conn:
+    with psycopg.connect(dsn(record_b, app=False)) as conn:
         conn.execute("SELECT set_config('app.tenant_id', %s, false)", (record_b["tenant_id"],))
         counts = {}
         for table in ("rag_queries", "evidence_access_log", "knowledge_versions", "catalog_items"):

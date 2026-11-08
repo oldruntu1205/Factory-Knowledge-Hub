@@ -8,11 +8,13 @@
 
 from __future__ import annotations
 
-import contextlib
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from fkh.tools import winacl
 
 
 def pg_bin() -> Path:
@@ -56,10 +58,14 @@ def init_cluster(pgdata: Path, *, superuser_password: str | None = None) -> None
             raise SystemExit(f"initdb 失败：\n{created.stdout}\n{created.stderr}")
         return
 
-    with tempfile.NamedTemporaryFile("w", suffix=".pw", delete=False, encoding="utf-8") as handle:
-        handle.write(superuser_password + "\n")
-        pwfile = Path(handle.name)
+    # 临时口令文件不能落在任何人都能读的 %TEMP% 根目录：先建私有目录并收紧 ACL，
+    # 再在其中创建口令文件（文件继承目录 DACL，写入前就已私有）。
+    private_dir = Path(tempfile.mkdtemp(prefix="fkh-pg-pw-"))
     try:
+        winacl.tighten(private_dir, directory=True)
+        pwfile = private_dir / "superuser.pw"
+        pwfile.write_text(superuser_password + "\n", encoding="utf-8")
+        winacl.tighten(pwfile, directory=False)
         created = run_pg([
             *base,
             "--auth-host=scram-sha-256",
@@ -67,8 +73,7 @@ def init_cluster(pgdata: Path, *, superuser_password: str | None = None) -> None
             f"--pwfile={pwfile}",
         ])
     finally:
-        with contextlib.suppress(OSError):
-            pwfile.unlink()
+        shutil.rmtree(private_dir, ignore_errors=True)
     if created.returncode != 0:
         raise SystemExit(f"initdb（scram）失败：\n{created.stdout}\n{created.stderr}")
 

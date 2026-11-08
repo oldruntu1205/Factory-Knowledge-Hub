@@ -191,18 +191,13 @@ def upload(record: dict[str, Any], token: str, *, title: str, text: str,
     if code != 201:
         raise SystemExit(f"导入失败 {code}: {payload}")
     version = str(payload["version_id"])
-    # 已知现象（本轮如实记录）：API 冷启动后的头一两个 review 偶发 403（VersionNotFound 映射）。
-    # 这里重试一次并计数，不掩盖：重试次数写入验收记录与"剩余边界"。
+    # 2026-11-09：根因是 yield 依赖在响应发送后才提交事务（FastAPI 的 request exit stack
+    # 在 response 之后关闭）。客户端紧随其后的 review 可能读不到刚写入的版本，被映射成 403。
+    # `CommitBeforeSend` 已改为响应前提交；这里**不再重试**，首次请求必须 200。
     code, body = http("POST", api(record, f"/v1/knowledge/{version}/review"),
                       payload={"decision": "PASS"}, token=token)
-    if code == 403:
-        RECORDS.append({"step": "review-retried-on-403", "ok": True,
-                        "detail": f"key={key} 首次 review 403，重试一次"})
-        time.sleep(1.5)
-        code, body = http("POST", api(record, f"/v1/knowledge/{version}/review"),
-                          payload={"decision": "PASS"}, token=token)
     if code != 200:
-        raise SystemExit(f"审核失败 {code}: {body}")
+        raise SystemExit(f"审核首请求失败 {code}（不再重试掩盖）: {body}")
     code, body = http("POST", api(record, f"/v1/knowledge/{version}/publish"),
                       payload={"audience": "internal"}, token=token)
     if code != 200:

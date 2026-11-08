@@ -6,13 +6,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator, MutableMapping
 from contextlib import contextmanager
 from typing import Any
 
 import psycopg
 from fastapi import Request
 from psycopg_pool import ConnectionPool
+from starlette.concurrency import run_in_threadpool
+from starlette.types import Message, Receive, Scope, Send
 
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.security import PrincipalDep
@@ -85,12 +87,69 @@ def _release(conn: psycopg.Connection[Any], *, completed: bool) -> None:
             raise
 
 
+def _commit_before_send(conn: psycopg.Connection[Any]) -> None:
+    if not conn.closed:
+        conn.commit()
+
+
+def _rollback_before_send(conn: psycopg.Connection[Any]) -> None:
+    if not conn.closed:
+        conn.rollback()
+
+
+class CommitBeforeSend:
+    """在响应字节发出**之前**提交本请求的事务。
+
+    FastAPI 的 yield 依赖在 `await response(...)` 之后才执行退出逻辑
+    （`fastapi/routing.py` 的 request_response：先发送响应，再关 request exit stack）。
+    于是"数据库已提交"实际发生在客户端收到 201 之后：客户端立刻发起的下一条请求
+    可能读不到刚写入的行（2026-11-09 实测：上传 201 后 3.9ms 的审核 403，行在响应后
+    158ms 才可见；租户绑定正常，这是事务可见性竞态）。
+
+    这里包在 ASGI 发送链上：第一条 `http.response.start` 到达时，成功响应提交、
+    错误响应（>=400）显式回滚，完成之后才放行响应。依赖退出时仍会做一次收敛
+    （成功 commit / 异常 rollback），但不再是唯一的提交点。
+    """
+
+    def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        state: MutableMapping[str, Any] = scope.setdefault("state", {})
+        committed = False
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal committed
+            if not committed and message["type"] == "http.response.start":
+                committed = True
+                conn = state.get("conn")
+                status = int(message.get("status", 500))
+                if conn is not None:
+                    # 成功：提交事务，保证客户端收到 2xx/3xx 时数据已可见；
+                    # 错误：显式回滚，不依赖"端点一定抛异常"这一隐含假设
+                    # （端点若正常返回 4xx Response，yield 依赖会正常结束并提交）。
+                    # commit/rollback 是阻塞 IO：放线程池，避免卡住事件循环。
+                    if status < 400:
+                        await run_in_threadpool(_commit_before_send, conn)
+                    else:
+                        await run_in_threadpool(_rollback_before_send, conn)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def get_conn(
     request: Request, context: PrincipalDep
 ) -> Iterator[psycopg.Connection[Any]]:
     pool = get_pool(request)
     if pool is None:
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail="数据库未配置，业务端点不可用")
-    # 退出上下文时提交；异常时回滚，事务边界即请求边界
+    # 退出上下文时提交；异常时回滚，事务边界即请求边界。
+    # 连接同时挂到 request.state，供 CommitBeforeSend 在响应发出前提交。
     with tenant_connection(pool, context.tenant_id) as conn:
+        request.state.conn = conn
         yield conn

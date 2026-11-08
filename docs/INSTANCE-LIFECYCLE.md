@@ -22,7 +22,7 @@ uv run python -m fkh.tools.instance provision `
 | 业务角色 | `fkh_app_<suffix>`：LOGIN、**非 owner**、无 SUPERUSER、无 BYPASSRLS；只授 DML/序列/函数 |
 | 租户与主体 | 一个租户 + 一个运维 user 主体 + 一个 agent 主体（无演示语料） |
 | 实例配置 | 登记 4 个域与目录规则（`^[A-Z]{2}-[0-9]{4}$` / `CNY`），不依赖运行时隐式补建 |
-| 密钥 | `<workdir>/secrets/jwt.secret`（0600），**重启后不变** |
+| 密钥 | `<workdir>/secrets/jwt.secret`：Windows 上为**仅当前账户的 NTFS DACL**（非继承），其它平台 0600；**重启后不变** |
 
 输出 `instance.json`（含 `admin_dsn` / `app_dsn` / 端口 / 租户 / 主体），密钥单独放在 secret 文件里。
 
@@ -39,6 +39,16 @@ uv run python -m fkh.tools.instance stop  --workdir .instance-customer-x   # 停
 **重启后同一令牌仍然有效**（密钥来自实例目录，不重新生成）。
 `serve` 会顺带把内嵌 PG 拉起来（`stop` 会连库一起停）。
 
+`api.pid` 是 JSON（`pid` = 实际监听者，`launcher_pid` = 启动器，`nonce` = 本次启动随机串）。
+`stop` 只有在「进程确实是本实例的 API」时才终止：nonce 命中，或 app/端口/监听者三重匹配；
+pid 文件指向另一个服务时**拒绝停止，且不碰对方进程**；进程已不存在则视为陈旧 pid 文件并继续停 PG。
+
+老实例的密钥如果只有 `chmod`，可显式收紧（需要以密钥所有者账户运行）：
+
+```powershell
+uv run python -m fkh.tools.instance harden-secrets --workdir .instance-customer-x
+```
+
 ## 3. 备份与恢复
 
 ```powershell
@@ -52,7 +62,8 @@ uv run python -m fkh.tools.instance restore --from backup-x.dump `
 | 项 | 语义 |
 |---|---|
 | 备份格式 | `pg_dump --format=custom --no-owner --no-privileges`（逻辑备份，不含角色/授权） |
-| 恢复目标 | **全新隔离实例**：新数据目录、新端口、新库名；`restore` 重建业务角色并授权 |
+| 恢复目标 | **全新目录**（不存在或为空）：新数据目录、新端口、新库名；`restore` 重建业务角色并授权 |
+| 失败清理 | 只撤销**本次创建**的库、角色、`pgdata`、`secrets`、`instance.json`；调用方预建的空目录保留；`CREATE DATABASE/ROLE` 已发出但客户端未拿到结果时**不按名字删除**，在清理回执与原异常 note 里报"可能遗留 + 人工核查" |
 | 密钥 | 恢复实例**新生成**密钥（`force_new`），源实例令牌在恢复实例上不通用（401） |
 | 前置 | 恢复前会初始化空集群并应用**同版本**迁移 schema（dump 自带 schema，不做迁移升级） |
 
@@ -60,9 +71,16 @@ uv run python -m fkh.tools.instance restore --from backup-x.dump `
 
 ```powershell
 uv run python scripts/acceptance_instance_lifecycle.py
+uv run python scripts/acceptance_instance_security_regressions.py
 ```
 
-做三件事并落 `_evidence/instance_lifecycle_acceptance.md`（脱敏，不含密钥/口令）：
+安全回归验收落 `_evidence/instance_security_regressions.md`，覆盖：Windows DACL + 普通账户
+读拒绝、restore 全新目录/失败清理、自定义域重启、pid 指向外部服务时拒绝停止、冷启动首个
+review 200。若运行验收的 Python 令牌不是提升令牌（如 DSH 低完整性沙箱），先用管理员
+PowerShell 执行 `scripts/verify_secret_acl_windows.ps1 -SecretDir ... -OutJson ...`，
+再用 `--acl-probe-json` 传入结果。
+
+生命周期验收做三件事并落 `_evidence/instance_lifecycle_acceptance.md`（脱敏，不含密钥/口令）：
 
 1. **空环境首装**：新目录 + 独立端口；只导入合成资料；迁移用管理员、API 用业务角色；
    Agent 只给 `answer/search/evidence.read`（越权导入必须 403）。
@@ -82,16 +100,20 @@ uv run python scripts/acceptance_instance_lifecycle.py
 | 数据库认证 | 交付实例 `initdb --auth-host=scram-sha-256`（临时 pwfile 初始化，用完即删）；**不用 trust** |
 | 管理员与业务角色 | 各自独立口令（`secrets/db-admin.password` / `secrets/db-app.password`），交叉使用一律认证失败 |
 | 业务角色权限 | `fkh_app_*`：LOGIN、非 owner、无 SUPERUSER、无 BYPASSRLS；只授 DML/序列/函数 |
-| JWT 密钥 | 只在 `secrets/jwt.secret`（0600）；**`instance.json` 不含任何密钥/口令**；启动时校验长度与非占位值 |
-| 凭据不外泄 | 口令只进环境变量与 PG 的 `PGPASSWORD`（不写 argv）；日志/验收记录只出现脱敏 DSN；备份用 `--no-owner --no-privileges` |
+| JWT 密钥 | 只在 `secrets/jwt.secret`：Windows 用**保护 DACL + 仅当前账户**（`winacl`），其它平台 0600；**`instance.json` 不含任何密钥/口令**；启动时校验长度与非占位值 |
+| 凭据不外泄 | 口令只进环境变量与 PG 的 `PGPASSWORD`（不写 argv）；`initdb` 临时口令文件放在私有临时目录；日志/验收记录只出现脱敏 DSN；备份用 `--no-owner --no-privileges` |
 | 重复首装 | 已初始化实例再次 `provision` **明确拒绝**；`--reuse` 幂等复用（保留租户/主体/数据/令牌） |
-| 恢复边界 | `restore` 只接受全新隔离目标（无 `instance.json`、空 `pgdata`、端口空闲、库名不存在）；`pg_restore --single-transaction`，失败即删库/停库/清目录 |
-| 启动校验 | 端口占用直接拒绝并报占用者；启动后确认**本次子进程**存活 + `/health/ready` + 用本实例密钥做身份探测（应答者必须是本实例） |
-| 停止校验 | pid 文件中的进程 cmdline 必须匹配本实例；停止后核验端口关闭、PG 已停 |
+| 恢复边界 | `restore` 只接受**全新目录**（不存在或为空；端口空闲、库名不存在）；`pg_restore --single-transaction`；失败只清理本次创建的库/角色/目录，不删调用方预建目录 |
+| 启动校验 | 端口占用直接拒绝并报占用者；启动后确认**本次子进程**存活 + `/health/ready` + 用本实例密钥做身份探测；域清单按**子集**校验，允许运行时登记的自定义域 |
+| 停止校验 | pid 文件（JSON）记录实际监听者 + 启动器 + 本次 nonce；只有 nonce/app/端口/监听者匹配才终止；指向其它服务时拒绝且不碰对方；进程不存在则按陈旧 pid 处理 |
+| 首个请求可见性 | 成功响应在**响应头发送前**提交事务（`CommitBeforeSend`），客户端紧随其后的读取/审核不会读到未提交状态 |
 
-**已知现象（未解决，单独 RCA）**：API 冷启动后**头一两个** `POST /v1/knowledge/{id}/review` 偶发 403
-（`VersionNotFound` 被映射为 403），重试即成功；验收脚本会重试一次并记录。怀疑与连接池/租户绑定的
-预热路径有关，尚未定位。
+**冷启动 review 403（已定位并修复，2026-11-09）**：不是租户绑定/连接池预热问题。实测复现：
+`POST /documents` 返回 201 后 3.9ms 的 `POST /review` 得到 403，而数据库行在响应后 **158ms**
+才可见。根因是 FastAPI 的 yield 依赖在 `await response(...)` **之后**才关闭 request exit stack
+（`fastapi/routing.py: request_response`），事务提交被排到客户端已收到响应之后。修复为 ASGI
+中间件在第一条 `http.response.start` 前提交成功响应的事务；错误响应仍回滚。验收条件：
+冷启动后首个 `POST /v1/knowledge/{id}/review` 必须 200，**不再重试**。
 
 ## 6. 边界（未覆盖）
 
@@ -103,5 +125,7 @@ uv run python scripts/acceptance_instance_lifecycle.py
 - 交付包不含 `.acceptance/`（验收临时数据，已被 `.gitignore` 忽略）。
 - `pg_hba.conf` 由 `initdb` 生成（host=scram，local=trust）；Windows 无 unix socket，本片未额外收紧 local 行；
   生产 Linux 部署需按部署规范收紧并由系统账户隔离。
-- 口令/密钥的静态保护依赖操作系统访问控制（本机 NTFS ACL），脚本只做 `chmod 0600` 尽力而为。
-- 启停的进程身份校验基于 cmdline 子串匹配；若被 systemd/容器包装，需要改 pidfile 语义。
+- Windows 密钥 DACL 由**创建/恢复实例的账户**持有；换账户运行 `serve` 会拒绝（需以目标账户
+  provision/restore，或由部署规范显式授权）。Linux 上由 `0600` + 系统账户隔离兜底。
+- 启停身份校验依赖本工具写入的 pid 文件与本次 nonce；若被 systemd/容器包装，需要改 pidfile 语义。
+- 未做长期并发压测；冷启动回归为 3 次重启 × 每轮 8 次上传+立即审核。

@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from fkh.answer import AnswerNotConfigured, AnswerService
-from fkh.api.db import create_pool, tenant_connection
+from fkh.api.db import CommitBeforeSend, create_pool, tenant_connection
 from fkh.api.errors import ApiError, ErrorCode, error_body, install_error_handlers
 from fkh.api.models import AnswerRequest
 from fkh.api.routes_catalog_conflicts import router as catalog_conflicts_router
@@ -178,6 +178,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    # 先注册：后续 BaseHTTPMiddleware 会插到它前面，使本中间件紧贴路由，
+    # 能在依赖退出（事务提交）之前看到 response.start 并完成提交。
+    app.add_middleware(CommitBeforeSend)
 
     @app.middleware("http")
     async def trace_middleware(
