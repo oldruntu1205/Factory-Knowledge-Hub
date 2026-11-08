@@ -485,7 +485,10 @@ def test_validation_message_names_the_field(client: TestClient, seeded: dict[str
     assert response.status_code == 422
     message = response.json()["error"]["message"]
     assert "domain" in message, message
-    assert "allowed values" in message, message
+    # 契约强制改写（2026-11-08 / ADR-009 + 0035）：domain 由"枚举 allowed values"
+    # 改为"实例配置 + 格式校验"，提示语相应改为可操作的登记/格式指引。
+    # 断言不放松：仍然要求①点名字段 ②给出可操作提示 ③不落坏值。
+    assert ("register" in message) or ("lowercase" in message), message
     # 绝不回显提交值
     assert secret_marker not in message, message
 

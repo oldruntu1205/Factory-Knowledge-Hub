@@ -21,6 +21,7 @@ from fkh.api.db import create_pool, tenant_connection
 from fkh.api.errors import ApiError, ErrorCode, error_body, install_error_handlers
 from fkh.api.models import AnswerRequest
 from fkh.api.routes_catalog_conflicts import router as catalog_conflicts_router
+from fkh.api.routes_config import router as config_router
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_documents import router as documents_router
 from fkh.api.routes_evidence import router as evidence_router
@@ -286,6 +287,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(context_router)
     app.include_router(training_router)
     app.include_router(interview_router)
+    app.include_router(config_router)
     app.include_router(evidence_router)
     app.include_router(search_router)
 

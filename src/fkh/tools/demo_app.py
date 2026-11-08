@@ -154,6 +154,25 @@ def _seed(
             tenant = row[0]
         conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
 
+        # 实例初始化：登记本实例要用的知识域（ADR-009 + 0035：域不再硬编码，
+        # 新租户域清单默认为空，导入前必须登记；这里的清单就是"实例部署时选择的域模板"）
+        for code, label in (
+            ("owner_experience", "老师傅经验"),
+            ("glass_materials", "玻璃与材料"),
+            ("production_process", "生产工艺"),
+            ("product_catalog", "产品目录"),
+            ("quality", "质量与检验"),
+            ("equipment_safety", "设备与安全"),
+            ("foreign_trade", "外贸客户"),
+            ("training", "培训材料"),
+        ):
+            conn.execute(
+                "INSERT INTO knowledge_domains (tenant_id, code, label, is_default)"
+                " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
+                (tenant, code, label),
+            )
+        conn.commit()
+
         principal = conn.execute(
             "SELECT id FROM principals WHERE tenant_id = %s AND external_subject = %s",
             (tenant, f"{username}@demo.local"),

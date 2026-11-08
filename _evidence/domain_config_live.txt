@@ -1,0 +1,7 @@
+{"step": "list", "http": 200, "domains": ["equipment_safety", "foreign_trade", "glass_materials", "owner_experience", "product_catalog", "production_process", "quality", "training"]}
+{"step": "upload_unregistered", "http": 422, "message": "Request payload is invalid (domain: register it via POST /v1/config/domains first)"}
+{"step": "register", "http": 201, "body": {"code": "roaster_maintenance", "label": "烘焙机维护", "outcome": "CREATED", "created": true}}
+{"step": "upload_registered", "http": 201, "version": "8f259385-7acc-4b5b-ac4e-2bf8c0b5f30b"}
+{"step": "approve_publish", "review": 200, "publish": 200}
+{"step": "answer", "http": 200, "status": "ANSWERED", "answer": "银皮收集盒每烘焙 50 锅清理一次。", "citations": 2}
+{"step": "verdict", "pass": true}

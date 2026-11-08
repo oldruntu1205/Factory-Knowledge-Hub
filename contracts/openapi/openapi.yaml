@@ -1065,6 +1065,77 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationError"}
 
+  /v1/config/domains:
+    get:
+      tags: [config]
+      summary: 列出本实例的知识域清单
+      description: >-
+        域是**实例级配置**（ADR-009）：用于组织、展示与过滤，不参与授权与可见性；
+        可见性仍由 status / audience / required_scope / ACL 决定。
+        租户取自认证上下文。
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: 本实例已登记的域
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [domains]
+                properties:
+                  domains:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [code, label, is_active, is_default]
+                      properties:
+                        code: {type: string, pattern: "^[a-z][a-z0-9_]{1,63}$"}
+                        label: {type: string}
+                        is_active: {type: boolean}
+                        is_default: {type: boolean}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [config]
+      summary: 登记新的知识域（幂等）
+      description: >-
+        需要 `knowledge.write`——含义是"拥有知识写权限的人可以向本实例的共享分类清单追加域"。
+        幂等语义：首次创建 201；相同 code + 相同 label 重试 200；相同 code + 不同 label 409（不静默改名）。
+        本轮不提供改名/停用/删除（生命周期策略暂不纳入本片）。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, label]
+              properties:
+                code: {type: string, minLength: 2, maxLength: 64,
+                       pattern: "^[a-z][a-z0-9_]{1,63}$"}
+                label: {type: string, minLength: 1, maxLength: 120}
+      responses:
+        "201":
+          description: 已登记（或已存在且一致）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [code, label, outcome, created]
+                properties:
+                  code: {type: string}
+                  label: {type: string}
+                  outcome: {type: string, enum: [CREATED, EXISTS]}
+                  created: {type: boolean}
+        "401": {$ref: "#/components/responses/Unauthenticated"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+
 components:
   schemas:
     EvidenceResponse:

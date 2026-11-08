@@ -128,6 +128,19 @@ def _seed_tenant(dsn: str) -> dict[str, str]:
                 " VALUES (%s, %s, %s, 'user')",
                 (tenant, pid, subject),
             )
+        # 实例初始化：登记本实例要用的域（ADR-009：域是实例配置，不再硬编码）
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        for code, label in (
+            ("product_catalog", "产品目录"),
+            ("quality", "质量与检验"),
+            ("equipment_safety", "设备与安全"),
+        ):
+            conn.execute(
+                "INSERT INTO knowledge_domains (tenant_id, code, label, is_default)"
+                " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
+                (tenant, code, label),
+            )
+        conn.execute("SELECT set_config('app.tenant_id', '', false)")
         conn.commit()
     return {"tenant": str(tenant), "ops": str(ops), "customer": str(customer)}
 
@@ -180,7 +193,7 @@ def _data_ops_token(inst: dict[str, Any]) -> str:
     return _token(inst["secret"], inst["tenant"], inst["ops"],
                   scopes=("knowledge.ingest", "knowledge.read", "knowledge.review",
                           "knowledge.publish", "knowledge.revoke", "knowledge.answer",
-                          "knowledge.search", "evidence.read"),
+                          "knowledge.search", "evidence.read", "knowledge.write"),
                   allowed=("internal_product", "customer_public"))
 
 
@@ -314,20 +327,36 @@ def test_revoke_in_one_instance_does_not_affect_the_other(
         assert after_b.json()["status"] == "ANSWERED", after_b.json()
 
 
-def test_domain_taxonomy_is_a_reuse_blocker(instances: dict[str, Any]) -> None:
-    """如实记录复用阻碍：知识域枚举写死在库里（工厂域），换行业必须改代码/迁移。
+def test_custom_domain_is_instance_configuration(instances: dict[str, Any]) -> None:
+    """2026-11-08（ADR-009 + 0035）：域改为实例配置后，非工厂行业域无需改代码即可使用。
 
-    这里用"烘焙行业域"试探，期望**当前被拒**；等域清单移到应用层后，本用例应改为通过。
+    断言不放松：未登记 → 422（并提示登记方式）；登记后 → 201；
+    同一 code 改名 → 409（不静默改名）。
     """
     a = instances["a"]
+    token = _data_ops_token(a)
+    body = {
+        "filename": "bakery.md", "title": "烘焙设备", "domain": "bakery_equipment",
+        "owner_department": "ops", "classification": 1, "audience": "internal",
+        "required_scope": "internal_product", "acl_allow_roles": ["staff"],
+        "knowledge_key": f"custom-{uuid.uuid4().hex[:6]}",
+        "content_base64": base64.b64encode(ROASTER_MANUAL.encode()).decode(),
+    }
     with _app(a) as client_a:
-        body = {
-            "filename": "bakery.md", "title": "烘焙设备", "domain": "bakery_equipment",
-            "owner_department": "ops", "classification": 1, "audience": "internal",
-            "required_scope": "internal_product", "acl_allow_roles": ["staff"],
-            "knowledge_key": f"blocker-{uuid.uuid4().hex[:6]}",
-            "content_base64": base64.b64encode(ROASTER_MANUAL.encode()).decode(),
-        }
-        response = client_a.post("/v1/knowledge/documents", json=body,
-                                 headers=_h(_data_ops_token(a)))
-    assert response.status_code == 422, response.text
+        blocked = client_a.post("/v1/knowledge/documents", json=body, headers=_h(token))
+        assert blocked.status_code == 422, blocked.text
+        assert "config/domains" in blocked.json()["error"]["message"], blocked.text
+
+        created = client_a.post("/v1/config/domains",
+                                json={"code": "bakery_equipment", "label": "烘焙设备"},
+                                headers=_h(token))
+        assert created.status_code == 201, created.text
+        assert created.json()["outcome"] == "CREATED"
+
+        uploaded = client_a.post("/v1/knowledge/documents", json=body, headers=_h(token))
+        assert uploaded.status_code == 201, uploaded.text
+
+        renamed = client_a.post("/v1/config/domains",
+                                json={"code": "bakery_equipment", "label": "改名尝试"},
+                                headers=_h(token))
+        assert renamed.status_code == 409, renamed.text

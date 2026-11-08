@@ -151,10 +151,38 @@ def set_principal(conn: psycopg.Connection, principal_id: str) -> None:
     conn.execute("SELECT set_config('app.principal_id', %s, true)", (principal_id,))
 
 
-def create_tenant(conn: psycopg.Connection, name: str) -> str:
+DEFAULT_DOMAINS = (
+    ("owner_experience", "老师傅经验"),
+    ("glass_materials", "玻璃与材料"),
+    ("production_process", "生产工艺"),
+    ("product_catalog", "产品目录"),
+    ("quality", "质量与检验"),
+    ("equipment_safety", "设备与安全"),
+    ("foreign_trade", "外贸客户"),
+    ("training", "培训材料"),
+)
+
+
+def create_tenant(conn: psycopg.Connection, name: str, *, seed_domains: bool = True) -> str:
+    """建租户。
+
+    2026-11-08（ADR-009 + 0035）：知识域改为实例配置，文档对域有复合外键。
+    测试默认按"工厂模板"种子 8 域（等价于工厂实例的部署初始化）；
+    需要验证"新租户域清单为空"的用例传 `seed_domains=False`。
+    """
     row = conn.execute("INSERT INTO tenants (name) VALUES (%s) RETURNING id", (name,)).fetchone()
     assert row is not None
-    return str(row[0])
+    tenant = str(row[0])
+    if seed_domains:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (tenant,))
+        for code, label in DEFAULT_DOMAINS:
+            conn.execute(
+                "INSERT INTO knowledge_domains (tenant_id, code, label, is_default)"
+                " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
+                (tenant, code, label),
+            )
+        conn.execute("SELECT set_config('app.tenant_id', '', false)")
+    return tenant
 
 
 def create_principal(conn: psycopg.Connection, tenant_id: str, subject: str, kind: str = "user") -> str:

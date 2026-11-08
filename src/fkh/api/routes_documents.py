@@ -28,6 +28,7 @@ from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.security import PrincipalDep
 from fkh.authz.policy import AclPolicy, Decision, evaluate
 from fkh.catalog.conflicts import bind_tenant
+from fkh.domain.domains import DomainError, DomainMissing, DomainService
 from fkh.workers.ingestion import IngestionRequest, ingest_document
 from fkh.workers.repository import DuplicateContentError
 
@@ -160,12 +161,21 @@ def upload_document(
 ) -> dict[str, Any]:
     context.require_scope("knowledge.ingest")
 
-    if payload.domain not in VALID_DOMAINS:
+    # 2026-11-08（ADR-009）：域改为实例配置，校验本实例清单而不是硬编码枚举
+    try:
+        DomainService(conn, context.tenant_id).assert_usable(payload.domain)
+    except DomainMissing as exc:
         raise ApiError(
             ErrorCode.VALIDATION_ERROR,
-            detail=f"domain 必须是 {VALID_DOMAINS} 之一",
-            hint="domain: not one of the allowed values",
-        )
+            detail=str(exc),
+            hint="domain: register it via POST /v1/config/domains first",
+        ) from exc
+    except DomainError as exc:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            detail=str(exc),
+            hint="domain: lowercase letters/digits/underscore, starting with a letter",
+        ) from exc
     if payload.required_scope not in context.allowed_scopes:
         # 数据范围授权：不能上传到自己的授权范围之外
         raise ApiError(
