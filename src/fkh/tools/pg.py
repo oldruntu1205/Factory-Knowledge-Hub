@@ -1,11 +1,16 @@
 """随包内嵌 PostgreSQL 的启停与二进制路径（演示与交付共用）。
 
-从 `demo_app` 抽出来，避免"客户交付入口"依赖演示模块。
+两种初始化模式：
+- 默认 `initdb -A trust`：仅用于**本机演示**（数据目录不进交付）；
+- `initial_superuser_password=...`：交付实例，`initdb` 用 scram-sha-256 + `--pwfile` 初始化，
+  之后所有 host 连接都必须带密码（不再存在 trust 免密登录）。
 """
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +33,53 @@ def run_pg(args: list[str], *, capture: bool = True) -> subprocess.CompletedProc
     return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def ensure_postgres(pgdata: Path, port: int) -> str:
-    """确保内嵌 PG 在跑，返回 DSN（postgres 超级用户，仅供迁移与管理）。
+def init_cluster(pgdata: Path, *, superuser_password: str | None = None) -> None:
+    """初始化集群。
+
+    - `superuser_password` 为空：`-A trust`（演示用，仅本机）；
+    - 非空：`--auth-host=scram-sha-256 --auth-local=trust --pwfile`（交付用）。
+      密码文件写到系统临时目录，初始化后立即删除，不进入实例目录、不进日志。
+    """
+    pgdata.mkdir(parents=True, exist_ok=True)
+    bin_dir = pg_bin()
+    base = [
+        str(bin_dir / "initdb.exe"),
+        "-D", str(pgdata),
+        "-U", "postgres",
+        "--encoding=UTF8",
+        "--locale=C",
+    ]
+    if superuser_password is None:
+        args = [*base, "-A", "trust"]
+        created = run_pg(args)
+        if created.returncode != 0:
+            raise SystemExit(f"initdb 失败：\n{created.stdout}\n{created.stderr}")
+        return
+
+    with tempfile.NamedTemporaryFile("w", suffix=".pw", delete=False, encoding="utf-8") as handle:
+        handle.write(superuser_password + "\n")
+        pwfile = Path(handle.name)
+    try:
+        created = run_pg([
+            *base,
+            "--auth-host=scram-sha-256",
+            "--auth-local=trust",
+            f"--pwfile={pwfile}",
+        ])
+    finally:
+        with contextlib.suppress(OSError):
+            pwfile.unlink()
+    if created.returncode != 0:
+        raise SystemExit(f"initdb（scram）失败：\n{created.stdout}\n{created.stderr}")
+
+
+def ensure_postgres(
+    pgdata: Path, port: int, *, superuser_password: str | None = None
+) -> str:
+    """确保内嵌 PG 在跑，返回 DSN。
+
+    交付实例会带 `superuser_password`：首次初始化用 scram，之后连接串带密码。
+    演示实例不传密码，保持 trust（本机演示，数据目录不入交付）。
 
     不用 pgserver.get_server：它内部 `pg_ctl -w` 只等 10 秒，而 HDD 上非正常关机后的
     fsync 恢复可能 30 秒以上，会被误判成启动失败（实测踩过两次）。
@@ -38,18 +88,7 @@ def ensure_postgres(pgdata: Path, port: int) -> str:
     bin_dir = pg_bin()
 
     if not (pgdata / "PG_VERSION").exists():
-        created = run_pg(
-            [
-                str(bin_dir / "initdb.exe"),
-                "-D", str(pgdata),
-                "-U", "postgres",
-                "-A", "trust",
-                "--encoding=UTF8",
-                "--locale=C",
-            ]
-        )
-        if created.returncode != 0:
-            raise SystemExit(f"initdb 失败：\n{created.stdout}\n{created.stderr}")
+        init_cluster(pgdata, superuser_password=superuser_password)
 
     status = run_pg([str(bin_dir / "pg_ctl.exe"), "-D", str(pgdata), "status"])
     if status.returncode != 0:
@@ -67,7 +106,9 @@ def ensure_postgres(pgdata: Path, port: int) -> str:
         if started.returncode != 0:
             log = (pgdata / "log").read_text(encoding="utf-8", errors="replace")[-2000:]
             raise SystemExit(f"PostgreSQL 启动失败：\n{started.stdout}\n{started.stderr}\n{log}")
-    return f"postgresql://postgres:@127.0.0.1:{port}/postgres"
+    if superuser_password is None:
+        return f"postgresql://postgres:@127.0.0.1:{port}/postgres"
+    return f"postgresql://postgres:{superuser_password}@127.0.0.1:{port}/postgres"
 
 
 def stop_postgres(pgdata: Path) -> None:
@@ -75,4 +116,17 @@ def stop_postgres(pgdata: Path) -> None:
     run_pg([str(bin_dir / "pg_ctl.exe"), "-D", str(pgdata), "-m", "fast", "-w", "-t", "120", "stop"])
 
 
-__all__ = ["ensure_postgres", "pg_bin", "run_pg", "stop_postgres"]
+def postgres_status(pgdata: Path) -> bool:
+    """集群是否在跑（用 pg_ctl status，不依赖端口）。"""
+    result = run_pg([str(pg_bin() / "pg_ctl.exe"), "-D", str(pgdata), "status"])
+    return result.returncode == 0
+
+
+__all__ = [
+    "ensure_postgres",
+    "init_cluster",
+    "pg_bin",
+    "postgres_status",
+    "run_pg",
+    "stop_postgres",
+]

@@ -75,7 +75,25 @@ uv run python scripts/acceptance_instance_lifecycle.py
 验收默认把检索固定为 `lexical`、生成走本机 Ollama（`qwen3:14b`），因此**不依赖向量模型**，
 但需要本机 Ollama 在跑（否则问答会 503，脚本会在该步失败并如实记录）。
 
-## 5. 边界（未覆盖）
+## 5. 安全基线（2026-11-08 交付加固）
+
+| 项 | 做法 |
+|---|---|
+| 数据库认证 | 交付实例 `initdb --auth-host=scram-sha-256`（临时 pwfile 初始化，用完即删）；**不用 trust** |
+| 管理员与业务角色 | 各自独立口令（`secrets/db-admin.password` / `secrets/db-app.password`），交叉使用一律认证失败 |
+| 业务角色权限 | `fkh_app_*`：LOGIN、非 owner、无 SUPERUSER、无 BYPASSRLS；只授 DML/序列/函数 |
+| JWT 密钥 | 只在 `secrets/jwt.secret`（0600）；**`instance.json` 不含任何密钥/口令**；启动时校验长度与非占位值 |
+| 凭据不外泄 | 口令只进环境变量与 PG 的 `PGPASSWORD`（不写 argv）；日志/验收记录只出现脱敏 DSN；备份用 `--no-owner --no-privileges` |
+| 重复首装 | 已初始化实例再次 `provision` **明确拒绝**；`--reuse` 幂等复用（保留租户/主体/数据/令牌） |
+| 恢复边界 | `restore` 只接受全新隔离目标（无 `instance.json`、空 `pgdata`、端口空闲、库名不存在）；`pg_restore --single-transaction`，失败即删库/停库/清目录 |
+| 启动校验 | 端口占用直接拒绝并报占用者；启动后确认**本次子进程**存活 + `/health/ready` + 用本实例密钥做身份探测（应答者必须是本实例） |
+| 停止校验 | pid 文件中的进程 cmdline 必须匹配本实例；停止后核验端口关闭、PG 已停 |
+
+**已知现象（未解决，单独 RCA）**：API 冷启动后**头一两个** `POST /v1/knowledge/{id}/review` 偶发 403
+（`VersionNotFound` 被映射为 403），重试即成功；验收脚本会重试一次并记录。怀疑与连接池/租户绑定的
+预热路径有关，尚未定位。
+
+## 6. 边界（未覆盖）
 
 - 备份是**逻辑备份**：不含角色与授权，恢复由脚本重建；未验证 `pg_basebackup` 物理备份；
 - 未做 PITR / 备份期间持续写入的恢复语义；
@@ -83,3 +101,7 @@ uv run python scripts/acceptance_instance_lifecycle.py
 - 未验证密钥轮换策略（恢复实例换密钥后，旧令牌自然是 401，但没有轮换流程）；
 - 单实例内多租户不在产品范围（一客户一实例）；
 - 交付包不含 `.acceptance/`（验收临时数据，已被 `.gitignore` 忽略）。
+- `pg_hba.conf` 由 `initdb` 生成（host=scram，local=trust）；Windows 无 unix socket，本片未额外收紧 local 行；
+  生产 Linux 部署需按部署规范收紧并由系统账户隔离。
+- 口令/密钥的静态保护依赖操作系统访问控制（本机 NTFS ACL），脚本只做 `chmod 0600` 尽力而为。
+- 启停的进程身份校验基于 cmdline 子串匹配；若被 systemd/容器包装，需要改 pidfile 语义。
