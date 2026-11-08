@@ -18,11 +18,17 @@ import re
 
 # 货号形态：1–3 个大写字母 + 5–8 位数字（与目录抽取一致）
 _CODE = re.compile(r"^[A-Z]{1,3}\d{5,8}$")
+
+
+def _is_code(token: str, pattern: str | None) -> bool:
+    """货号判定：有实例规则时用规则（fullmatch），否则用工厂正则兜底。"""
+    matcher = re.compile(pattern) if pattern else _CODE
+    return matcher.fullmatch(token) is not None
 # 表头里出现这些词，说明这一行是列名而不是正文
 _HEADER_HINTS = ("货号", "编号", "型号")
 
 
-def render_evidence(text: str) -> str:
+def render_evidence(text: str, *, code_pattern: str | None = None) -> str:
     """把表行改写成「货号 X：列名=值，列名=值」。非表行原样保留。"""
     lines_out: list[str] = []
     headers: list[str] | None = None
@@ -42,7 +48,7 @@ def render_evidence(text: str) -> str:
             continue
 
         # 数据行：首列是货号，后面按位置配列名
-        if headers is not None and len(tokens) >= 2 and _CODE.fullmatch(tokens[0]):
+        if headers is not None and len(tokens) >= 2 and _is_code(tokens[0], code_pattern):
             pairs: list[str] = []
             for index, cell in enumerate(tokens[1:]):
                 name = headers[index + 1] if index + 1 < len(headers) else f"列{index + 2}"
@@ -55,11 +61,11 @@ def render_evidence(text: str) -> str:
     return "\n".join(lines_out)
 
 
-def has_table(text: str) -> bool:
+def has_table(text: str, *, code_pattern: str | None = None) -> bool:
     """是否检测到至少一行「表头 + 货号行」。仅用于测试与诊断。"""
-    rendered = render_evidence(text)
+    rendered = render_evidence(text, code_pattern=code_pattern)
     return any(line.startswith("表头：") for line in rendered.splitlines()) and any(
-        line.split("：", 1)[0].strip() and _CODE.fullmatch(line.split("：", 1)[0].strip())
+        line.split("：", 1)[0].strip() and _is_code(line.split("：", 1)[0].strip(), code_pattern)
         for line in rendered.splitlines()
         if "：" in line
     )

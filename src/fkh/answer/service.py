@@ -29,6 +29,7 @@ from fkh.answer.prompt import build_prompt, extract_citations
 from fkh.authz.policy import is_external_customer
 from fkh.catalog.lookup import chunk_contains_row, find_catalog_item
 from fkh.domain.catalog import count_distinct_codes, detect_catalog_intent
+from fkh.domain.catalog_rules import load_rule
 from fkh.generation import GenerationError, TextGenerator
 from fkh.retrieval.citation import (
     AnswerPlan,
@@ -316,7 +317,13 @@ class AnswerService:
                 model_id=None,
             )
 
-        prompt = build_prompt(query, assembly.blocks, language)
+        answer_rule = load_rule(self._conn, context.tenant_id)
+        prompt = build_prompt(
+            query,
+            assembly.blocks,
+            language,
+            code_pattern=answer_rule.code_pattern if answer_rule is not None else None,
+        )
         try:
             generated = self._generator.generate(
                 prompt, max_tokens=self._max_tokens, temperature=self._temperature
@@ -429,9 +436,12 @@ class AnswerService:
         只有「恰好一个货号 + 明确在问价格/规格」才会接管；其余一律交回 RAG，
         并把"为什么没路由"写进审计（不写原文，只写短枚举）。
         """
-        intent = detect_catalog_intent(query)
+        # 读路径：规则缺失时用工厂正则兜底（缺配置不阻断已有目录的作答）
+        rule = load_rule(self._conn, context.tenant_id)
+        code_pattern = rule.code_pattern if rule is not None else None
+        intent = detect_catalog_intent(query, code_pattern=code_pattern)
         if intent is None:
-            codes = count_distinct_codes(query)
+            codes = count_distinct_codes(query, code_pattern=code_pattern)
             reason = (
                 "no_code"
                 if codes == 0

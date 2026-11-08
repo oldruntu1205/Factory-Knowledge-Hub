@@ -36,11 +36,17 @@ _BULLET = re.compile(r"^[\s\-*·•\d\.、()（）]+")
 MIN_SUBSTANTIVE_CHARS = 6
 
 
-def build_prompt(query: str, blocks: Sequence[ContextBlock], language: str) -> str:
+def build_prompt(
+    query: str,
+    blocks: Sequence[ContextBlock],
+    language: str,
+    *,
+    code_pattern: str | None = None,
+) -> str:
     name = LANGUAGE_NAMES.get(language, "简体中文")
     # 表行改写成「货号 X：列名=值」：模型对裸字段列表基本读不动（实测试管规格答不出来）
     evidence = "\n\n".join(
-        f'<evidence id="{block.chunk_id}">\n{render_evidence(block.text.strip())}\n</evidence>'
+        f'<evidence id="{block.chunk_id}">\n{render_evidence(block.text.strip(), code_pattern=code_pattern)}\n</evidence>'
         for block in blocks
     )
     rules = [

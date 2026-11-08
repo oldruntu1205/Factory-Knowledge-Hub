@@ -161,18 +161,60 @@ class CatalogIntent:
     kind: str  # "price" | "spec"
 
 
-def detect_catalog_intent(query: str) -> CatalogIntent | None:
+# 查询里"可能是货号"的候选：连续的非空白、非标点片段（由实例规则判定是否成立）。
+# 2026-11-08（0036 后续）：货号规则来自实例配置，不再只认工厂正则——
+# 纯数字 EAN（6901234567892）、SKU-2026-001 之类都先当候选，再由规则 fullmatch 过滤。
+_TOKEN_CANDIDATE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,63}")
+
+# 数量/单位词：紧跟其后的数字更像"数量"而不是货号（EAN 与数量可能重叠，L1 提示）
+QUANTITY_WORDS = ("数量", "共", "买", "要", "订", "采购", "进")
+UNIT_WORDS = ("个", "件", "支", "只", "箱", "套", "台", "批", "打", "组", "米", "公斤", "kg", "元", "块")
+
+
+def _candidate_codes(query: str, code_pattern: str | None) -> list[str]:
+    """按实例规则从查询里挑出货号候选（同一货号重复只算一次）。"""
+    matcher = re.compile(code_pattern.strip()) if code_pattern else _CODE_IN_QUERY
+
+    def is_code(token: str) -> bool:
+        return matcher.fullmatch(token) is not None
+
+    codes: list[str] = []
+    for match in _TOKEN_CANDIDATE.finditer(query):
+        token = match.group(0)
+        if not is_code(token):
+            continue
+        if _looks_like_quantity(query, match.start(), match.end()):
+            continue
+        code = token.upper()
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _looks_like_quantity(query: str, start: int, end: int) -> bool:
+    """排除"数量语境"：前面紧邻数量词，或后面紧跟单位词。"""
+    head = query[max(0, start - 10) : start]
+    if any(word in head for word in QUANTITY_WORDS):
+        return True
+    # "3 个 6901…" 这类"数字 + 单位"紧邻语境也按数量处理
+    if re.search(r"\d\s*(?:" + "|".join(UNIT_WORDS) + r")\s*$", head):
+        return True
+    tail = query[end : end + 4].lstrip()
+    return any(tail.startswith(unit) for unit in UNIT_WORDS)
+
+
+def detect_catalog_intent(
+    query: str, *, code_pattern: str | None = None
+) -> CatalogIntent | None:
     """识别"单货号 + 明确询价/询规格"的查询。
 
     刻意保守（L1 裁决）：只有出现**恰好一个**货号，且问题确实在问价格或规格时才接管；
     「这个货号是否停产」这类问题仍走 RAG——精确通道不该因为看见货号就抢答。
     同一货号重复出现仍算一个。
+
+    `code_pattern` 来自实例规则（读路径允许缺省，缺省时用工厂正则兜底）。
     """
-    codes: list[str] = []
-    for match in _CODE_IN_QUERY.finditer(query):
-        code = match.group(1).upper()
-        if code not in codes:
-            codes.append(code)
+    codes = _candidate_codes(query, code_pattern)
     if len(codes) != 1:
         return None
 
@@ -183,12 +225,9 @@ def detect_catalog_intent(query: str) -> CatalogIntent | None:
     return None
 
 
-def count_distinct_codes(query: str) -> int:
+def count_distinct_codes(query: str, *, code_pattern: str | None = None) -> int:
     """查询里出现的不同货号数（用于审计"为什么没路由"）。"""
-    seen: set[str] = set()
-    for match in _CODE_IN_QUERY.finditer(query):
-        seen.add(match.group(1).upper())
-    return len(seen)
+    return len(_candidate_codes(query, code_pattern))
 
 
 __all__ = [
