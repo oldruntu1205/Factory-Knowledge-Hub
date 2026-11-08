@@ -135,6 +135,7 @@ def _build_legacy_db(dsn: str) -> dict[str, Any]:
         def add_chunk(
             chunk_id: uuid.UUID, version_id: uuid.UUID, text: str, generation: int,
         ) -> None:
+            """父块 + 子块（真实入库两条都写；只有父块会被证据服务判 PARENT_INCOMPLETE）。"""
             conn.execute(
                 """INSERT INTO knowledge_chunks
                      (tenant_id, id, version_id, chunk_kind, chunk_text, chunk_sha256,
@@ -146,25 +147,45 @@ def _build_legacy_db(dsn: str) -> dict[str, Any]:
                     json.dumps({"block_index": 0}), acl_id, generation,
                 ),
             )
+            child_id = uuid.uuid4()
+            conn.execute(
+                """INSERT INTO knowledge_chunks
+                     (tenant_id, id, version_id, parent_chunk_id, chunk_kind, chunk_text,
+                      chunk_sha256, tokenizer_id, locator, acl_policy_id, index_generation)
+                   VALUES (%s, %s, %s, %s, 'child', %s, %s, 'tok-v1', %s, %s, %s)""",
+                (
+                    tenant, child_id, version_id, chunk_id,
+                    text.splitlines()[0] if text.splitlines() else text,
+                    hashlib.sha256((text + "#child").encode()).hexdigest(),
+                    json.dumps({"block_index": 0, "paragraph_index": 0}), acl_id, generation,
+                ),
+            )
 
         # 待发布版本（旧库里已切出块，但停在 DRAFT）
         add_doc(pending_doc, "upgrade-pending", "quality")
         add_version(pending_version, pending_doc, status="DRAFT", classification=1,
                     audience="internal", scope="internal_product")
-        add_chunk(chunk_pending, pending_version, "升级前待发布：保压 60 秒合格。", 3)
+        # 关键：待发布版本放在**较早**的代（1），最大代属于目录 B（3）——
+        # 这样"升级后能否发布旧代版本"才被真正验证（此前都在最大代，闸门等同没测）
+        add_chunk(chunk_pending, pending_version, "升级前待发布：保压 60 秒合格。", 1)
 
         # 目录冲突：同一货号在两个版本里给出不同价格（升级后判歧义）
         add_doc(catalog_doc_a, "upgrade-catalog-a", "product_catalog")
         add_version(catalog_version_a, catalog_doc_a, status="PUBLISHED_PUBLIC",
                     classification=0, audience="customer_public", scope="customer_public")
-        add_chunk(chunk_catalog_a, catalog_version_a,
-                  "货号 A112420 200mm 38*300 24*24 单价 39.00", 1)
+        add_chunk(
+            chunk_catalog_a,
+            catalog_version_a,
+            "货号 A112420 200mm 38*300 24*24 单价 39.00\n"
+            "货号 A112430 300mm 38*400 24*24 单价 48.00",
+            2,
+        )
         add_doc(catalog_doc_b, "upgrade-catalog-b", "product_catalog")
         add_version(catalog_version_b, catalog_doc_b, status="PUBLISHED_PUBLIC",
                     classification=0, audience="customer_public", scope="customer_public",
                     version_no=2)
         add_chunk(chunk_catalog_b, catalog_version_b,
-                  "货号 A112420 200mm 38*300 24*24 单价 42.00", 2)
+                  "货号 A112420 200mm 38*300 24*24 单价 42.00", 3)
 
         conn.execute(
             """INSERT INTO catalog_items
@@ -181,6 +202,30 @@ def _build_legacy_db(dsn: str) -> dict[str, Any]:
                VALUES (%s, %s, %s, 'A112420', '200mm 38*300 24*24',
                        'A112420 200mm 38*300 24*24 单价 42.00', '42.00', 42.00, 'CNY', %s)""",
             (tenant, catalog_version_b, chunk_catalog_b, json.dumps({"block_index": 0})),
+        )
+        # 版本 A 里还有一个**不冲突**的货号（用于产生真实引用）
+        conn.execute(
+            """INSERT INTO catalog_items
+                 (tenant_id, version_id, chunk_id, code, spec, raw_text, raw_price, price,
+                  currency, locator)
+               VALUES (%s, %s, %s, 'A112430', '300mm 38*400 24*24',
+                       'A112430 300mm 38*400 24*24 单价 48.00', '48.00', 48.00, 'CNY', %s)""",
+            (tenant, catalog_version_a, chunk_catalog_a, json.dumps({"block_index": 0})),
+        )
+        # A112420 在版本 A 上带有冲突待办与候选（撤销 A 时这些行必须一并收敛）
+        conflict_group = uuid.uuid4()
+        conn.execute(
+            "INSERT INTO catalog_conflict_groups (tenant_id, group_id, version_id, code)"
+            " VALUES (%s, %s, %s, 'A112420')",
+            (tenant, conflict_group, catalog_version_a),
+        )
+        conn.execute(
+            """INSERT INTO catalog_conflict_candidates
+                 (tenant_id, group_id, candidate_id, chunk_id, raw_text, spec, raw_price, price)
+               VALUES (%s, %s, %s, %s,
+                       'A112420 200mm 38*300 24*24 单价 39.00', '200mm 38*300 24*24',
+                       '39.00', 39.00)""",
+            (tenant, conflict_group, uuid.uuid4(), chunk_catalog_a),
         )
         conn.commit()
 
@@ -204,6 +249,8 @@ def _build_legacy_db(dsn: str) -> dict[str, Any]:
         "pending_version": pending_version,
         "catalog_code": "A112420",
         "catalog_versions": (catalog_version_a, catalog_version_b),
+        "catalog_version_a": catalog_version_a,
+        "catalog_chunk_a": chunk_catalog_a,
         "ops_token": token(
             principal,
             ("knowledge.read", "knowledge.review", "knowledge.publish", "knowledge.revoke",
@@ -331,3 +378,100 @@ def test_audit_trace_is_preserved_after_purge(upgraded: dict[str, Any]) -> None:
         ).fetchone()[0]
     assert queries >= 1
     assert access >= 1
+
+
+def test_revoke_version_with_catalog_facts_rejects_old_citation_and_converges(
+    upgraded: dict[str, Any]
+) -> None:
+    """带目录条目 + 冲突候选的版本：撤销后旧引用立即拒绝，清理收敛，审计可追溯。
+
+    这是本轮的**真实复现**：升级前 `catalog_items` / `catalog_conflict_candidates`
+    对 `knowledge_chunks` 是 RESTRICT，撤销后清理被外键挡住（`0029` 修正为级联）。
+    """
+    settings = Settings(jwt_secret=SECRET, database_url=upgraded["app_dsn"],
+                        retrieval_hash_key=HASH_KEY, retrieval_hash_key_id=HASH_KEY_ID)
+    version_a = upgraded["catalog_version_a"]
+    tenant = upgraded["tenant"]
+
+    with TestClient(create_app(settings), raise_server_exceptions=False) as client:
+        # 用不冲突的货号 A112430（只在版本 A 里）产生**真实引用**
+        answered = client.post(
+            "/v1/knowledge/answer",
+            json={"query": "A112430 的规格是什么？", "knowledge_scope": "customer_public",
+                  "language": "zh-CN", "max_evidence": 5},
+            headers=_h(upgraded["ops_token"]),
+        )
+        assert answered.status_code == 200, answered.text
+        body = answered.json()
+        assert body["status"] == "ANSWERED", body
+        citation = body["citations"][0]
+        assert citation["version_id"] == str(version_a), citation
+        evidence_id = citation["evidence_id"]
+
+        before = client.get(f"/v1/evidence/{evidence_id}", headers=_h(upgraded["ops_token"]))
+        assert before.status_code == 200, before.text
+
+        revoked = client.post(
+            f"/v1/knowledge/{version_a}/revoke?reason=catalog-drill",
+            headers=_h(upgraded["ops_token"]),
+        )
+        assert revoked.status_code == 200, revoked.text
+
+        # 旧引用立即拒绝（撤销同步生效，不等清理）
+        immediately = client.get(f"/v1/evidence/{evidence_id}", headers=_h(upgraded["ops_token"]))
+        assert immediately.status_code in {403, 404}, immediately.text
+
+    # 清理：先注入一次失败（可重试），再成功（收敛）
+    with psycopg.connect(upgraded["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+
+        def broken(_c: psycopg.Connection[Any], _t: uuid.UUID, _v: uuid.UUID) -> int:
+            raise RuntimeError("注入失败")
+
+        failed = consume_revoke_events(conn, tenant, purge=broken)
+        assert failed.failed >= 1, failed
+
+        done = consume_revoke_events(conn, tenant)
+        assert done.processed >= 1, done
+
+        remaining_chunks = conn.execute(
+            "SELECT count(*) FROM knowledge_chunks WHERE tenant_id = %s AND version_id = %s",
+            (tenant, version_a),
+        ).fetchone()[0]
+        remaining_items = conn.execute(
+            "SELECT count(*) FROM catalog_items WHERE tenant_id = %s AND version_id = %s",
+            (tenant, version_a),
+        ).fetchone()[0]
+        candidates = conn.execute(
+            "SELECT count(*) FROM catalog_conflict_candidates c"
+            "  JOIN catalog_conflict_groups g"
+            "    ON g.tenant_id = c.tenant_id AND g.group_id = c.group_id"
+            " WHERE c.tenant_id = %s AND g.version_id = %s",
+            (tenant, version_a),
+        ).fetchone()[0]
+        assert remaining_chunks == 0, "块必须被清理"
+        assert remaining_items == 0, "目录事实必须随块清理（0029）"
+        assert candidates == 0, "冲突候选必须随块清理（0029）"
+
+        # 审计追溯：引用仍保留版本身份，块 ID 被置空
+        cited = conn.execute(
+            "SELECT chunk_id, version_id FROM rag_citations WHERE tenant_id = %s"
+            " AND version_id = %s",
+            (tenant, version_a),
+        ).fetchall()
+        assert cited, "审计应保留对已撤销版本的引用记录"
+        assert all(row[0] is None for row in cited), "块已删除，chunk_id 应被置空"
+        assert all(str(row[1]) == str(version_a) for row in cited)
+
+    # 另一个目录版本不受影响：A112420 只剩 42.00，仍可作答
+    with TestClient(create_app(settings), raise_server_exceptions=False) as client:
+        other = client.post(
+            "/v1/knowledge/answer",
+            json={"query": "A112420 的单价是多少？", "knowledge_scope": "customer_public",
+                  "language": "zh-CN", "max_evidence": 5},
+            headers=_h(upgraded["ops_token"]),
+        )
+        assert other.status_code == 200, other.text
+        other_body = other.json()
+        assert other_body["status"] == "ANSWERED", other_body
+        assert "42.00" in other_body["answer"], other_body
