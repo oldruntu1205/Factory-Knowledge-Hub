@@ -209,9 +209,24 @@ def resolve_group(
         conn.execute(
             """UPDATE catalog_conflict_groups
                   SET status = 'DROP_ALL', resolved_by = %s, resolved_at = now(),
-                      note = %s, updated_at = now()
+                      note = %s, updated_at = now(),
+                      resolved_snapshot = %s
                 WHERE tenant_id = %s AND group_id = %s""",
-            (actor_id, note, tenant_id, group_id),
+            (
+                actor_id,
+                note,
+                Jsonb(
+                    {
+                        "decision": "DROP_ALL",
+                        "code": code,
+                        "resolved_by": str(actor_id),
+                        "note": note,
+                        "candidate_count": _candidate_count(conn, tenant_id, group_id),
+                    }
+                ),
+                tenant_id,
+                group_id,
+            ),
         )
     else:
         row = conn.execute(
@@ -256,12 +271,44 @@ def resolve_group(
         conn.execute(
             """UPDATE catalog_conflict_groups
                   SET status = 'KEEP', selected_candidate_id = %s, resolved_by = %s,
-                      resolved_at = now(), note = %s, updated_at = now()
+                      resolved_at = now(), note = %s, updated_at = now(),
+                      resolved_snapshot = %s
                 WHERE tenant_id = %s AND group_id = %s""",
-            (candidate_id, actor_id, note, tenant_id, group_id),
+            (
+                candidate_id,
+                actor_id,
+                note,
+                Jsonb(
+                    {
+                        "decision": "KEEP",
+                        "candidate_id": str(candidate_id),
+                        "code": code,
+                        "raw_text": raw_text,
+                        "spec": spec,
+                        "raw_price": raw_price,
+                        "price": str(price),
+                        "locator": locator,
+                        "resolved_by": str(actor_id),
+                        "note": note,
+                    }
+                ),
+                tenant_id,
+                group_id,
+            ),
         )
 
     return get_group(conn, tenant_id, group_id)
+
+
+def _candidate_count(
+    conn: psycopg.Connection[Any], tenant_id: UUID, group_id: UUID
+) -> int:
+    row = conn.execute(
+        "SELECT count(*) FROM catalog_conflict_candidates"
+        " WHERE tenant_id = %s AND group_id = %s",
+        (tenant_id, group_id),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def get_group(conn: psycopg.Connection[Any], tenant_id: UUID, group_id: UUID) -> ConflictGroup:
