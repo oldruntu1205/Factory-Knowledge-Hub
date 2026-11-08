@@ -30,15 +30,18 @@ if (-not $Secret) {
   $Secret = "instance-$Name-" + ([guid]::NewGuid().ToString("N").Substring(0, 24))
 }
 
-if (-not (Test-Path $PgData)) {
-  New-Item -ItemType Directory -Path $PgData | Out-Null
+# 注意：**不要**预先创建 $PgData（initdb 要求空目录/不存在）；
+# 日志也不能放进 $PgData，否则 initdb 直接报 "directory exists but is not empty"。
+$logDir = "$PgData-logs"
+if (-not (Test-Path $logDir)) {
+  New-Item -ItemType Directory -Path $logDir | Out-Null
 }
 
 Write-Host "[instance:$Name] repo=$repo"
 Write-Host "[instance:$Name] pgdata=$PgData db=$DbPort api=$ApiPort ui=$UiPort"
 
-$log = Join-Path $PgData "run.log"
-$err = Join-Path $PgData "run.err"
+$log = Join-Path $logDir "run.log"
+$err = Join-Path $logDir "run.err"
 
 Start-Process -FilePath ".\.venv\Scripts\python.exe" `
   -ArgumentList @(

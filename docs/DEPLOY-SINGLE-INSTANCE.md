@@ -23,6 +23,30 @@ uv sync
 `scripts\instance-up.ps1` 会：建/复用该实例的 PG 数据目录 → 起内嵌 PG → 应用迁移 →
 起 API + 演示 UI（同源代理）→ 打印该实例的 tenant/subject。
 
+## 1a. 实测启动结果（2026-11-08）
+
+```
+.\scripts\instance-up.ps1 -Name smoke -PgData .instance-smoke `
+    -DbPort 55461 -ApiPort 8103 -UiPort 8113 -Provider none
+```
+
+输出（节选）：
+
+```
+-> 0030_backfill_all_generations.sql
+已应用 30 个迁移。
+[demo] 播种完成：subject='077eb693@demo.local', chunks=198, items=1252, conflicts_open=29
+[demo] API 启动中 127.0.0.1:8103
+[instance:smoke] 就绪：http://127.0.0.1:8113/  subject=077eb693@demo.local
+```
+
+对比第一套（长期在跑的演示实例）：`subject=648b7644@demo.local`。**两套实例的 subject/数据完全独立**，
+第二套是从同一提交新建库、跑完全部 30 个迁移后自动播种出来的。
+
+**踩到的坑（已修进脚本）**：不能预先创建 `$PgData` 目录——`initdb` 要求目录为空或不存在；
+日志也不能写进 `$PgData`，否则 `initdb` 直接报 `directory exists but is not empty`。
+脚本现在把日志放到 `$PgData-logs`。
+
 ## 2. 第二套实例（不同行业）
 
 ```powershell
