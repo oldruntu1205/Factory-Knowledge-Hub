@@ -64,7 +64,8 @@
 > 2026-11-04 已用**仓库工程文档**（19 篇 / 190+ 个 child）与 50 条人工题做过两次：
 > 词法（AND）0.06 → 词法（OR，`lexical-v2`）0.68 → 混合 0.84（CPU 17ms / 83ms 每查询）。
 > 完整口径、精度、偏置说明与复现命令见 [`recall-benchmark.md`](./recall-benchmark.md)。
-> **客户语料验收仍未做**，该数字只支持相对比较。
+> **客户语料验收仍未做**，该数字只支持相对比较。客户语料提交格式、校验脚本与验收下限见
+> [`customer-recall-intake.md`](./customer-recall-intake.md)。
 
 ## 7. 当前实现状态
 
@@ -77,7 +78,7 @@
 | 融合后 ACL 补齐 | ✅ |
 | HTTP 接线（服务端 opt-in） | ✅ 2026-11-04：默认 `lexical`，`FKH_RETRIEVAL_MODE=hybrid` 才启用；`/v1/knowledge/context` 固定词法（判决 Q7） |
 | 真实 BGE-M3 推理 | ✅ 2026-11-04 已在本机 CPU 跑通（torch 2.15.0+cpu / ST 6.2.0 / 1024d）；缺模型/权重/推理失败一律 503，不静默降级 |
-| 真实语料 recall 实测 | ✅ 仓库文档语料 50 题：词法 0.06 / OR 变体 0.66 / 混合 0.80（`recall-benchmark.md`）；**客户语料未做** |
+| 真实语料 recall 实测 | ✅ 仓库文档语料 50 题：词法 0.06 / OR 变体 0.66 / 混合 0.80（`recall-benchmark.md`）；**客户语料未做**（提交模板/校验见 `customer-recall-intake.md`） |
 | 生产启用 | ⬜ 未授权（判决 Q2；且评测显示词法查询构造本身需先修，见 `recall-benchmark.md` §6） |
 
 链路用 `DeterministicTestEmbedder`（哈希伪向量）验证过：它没有语义能力，

@@ -186,12 +186,24 @@ def _load_apply_module() -> Any:
 
 
 def _collect_files(corpus: Sequence[str]) -> list[Path]:
+    from fkh.domain.parsing.registry import SUPPORTED_SUFFIXES
+
     files: list[Path] = []
     for entry in corpus:
         path = Path(entry)
         if path.is_dir():
-            files.extend(sorted(p for p in path.rglob("*.md") if p.is_file()))
+            files.extend(
+                sorted(
+                    p for p in path.rglob("*")
+                    if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES
+                )
+            )
         elif path.is_file():
+            if path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                raise ValueError(
+                    f"不支持的语料格式：{path.suffix or '(无扩展名)'}；"
+                    f"支持 {', '.join(sorted(SUPPORTED_SUFFIXES))}"
+                )
             files.append(path)
         else:
             raise FileNotFoundError(f"语料路径不存在：{entry}")
@@ -360,7 +372,10 @@ def _print_table(summary: dict[str, Any], rows: Sequence[dict[str, Any]]) -> Non
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Recall@K 评测（词法 vs 混合）")
-    parser.add_argument("--corpus", nargs="+", required=True, help="语料目录或文件（.md）")
+    parser.add_argument(
+        "--corpus", nargs="+", required=True,
+        help="语料目录或文件（支持 .md/.markdown/.pdf/.docx/.csv/.tsv/.html/.htm）",
+    )
     parser.add_argument("--cases", required=True, help="评测集 JSON")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--rrf-k", type=int, default=60)

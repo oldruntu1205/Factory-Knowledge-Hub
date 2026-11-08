@@ -30,6 +30,9 @@ _SUFFIX_PARSERS: dict[str, Parser] = {
     ".htm": parse_html,
 }
 
+# 供语料目录收集/验收工具使用；新增解析器时必须同步这个集合。
+SUPPORTED_SUFFIXES = frozenset(_SUFFIX_PARSERS)
+
 _MIME_PARSERS: dict[str, Parser] = {
     "text/markdown": parse_markdown,
     "text/x-markdown": parse_markdown,
