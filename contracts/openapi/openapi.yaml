@@ -1199,7 +1199,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [configured, changed, rule]
+                required: [configured, changed, rule, warnings]
                 properties:
                   configured: {type: boolean}
                   changed: {type: boolean}
@@ -1212,6 +1212,10 @@ paths:
                       currencies:
                         type: array
                         items: {type: string}
+                  warnings:
+                    type: array
+                    description: 保存提示（不阻断）；例如规则过宽会提示可能误识别数量/订单号
+                    items: {type: string}
         "401": {$ref: "#/components/responses/Unauthenticated"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "409": {$ref: "#/components/responses/Conflict"}

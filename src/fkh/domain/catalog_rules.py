@@ -183,6 +183,24 @@ def save_rule(
     return new_rule, True
 
 
+def rule_warnings(rule: CatalogRule) -> list[str]:
+    """保存时提示"过宽规则"（警告，不拒绝）：会影响查询侧精确路由的正确性。
+
+    判定以"能匹配普通数字/普通单词/空串"为准，而不是按正则字面量黑名单，
+    因为合法需求也可能长得像 `^\d+$`。
+    """
+    warnings: list[str] = []
+    samples = ("", "1", "12", "abc", "A1")
+    matched = [sample for sample in samples if rule.matcher.fullmatch(sample) is not None]
+    if matched:
+        warnings.append(
+            "code_pattern 过于宽泛（可匹配 "
+            + "、".join(repr(s) for s in matched[:3])
+            + "）：查询侧可能把数量、订单号或普通词误判为货号，建议收紧"
+        )
+    return warnings
+
+
 def _require_read_committed(conn: psycopg.Connection[Any]) -> None:
     """PUT 的存量检查依赖 READ COMMITTED（每条语句取新快照）。
 
@@ -235,5 +253,6 @@ __all__ = [
     "compile_rule",
     "load_rule",
     "require_rule",
+    "rule_warnings",
     "save_rule",
 ]

@@ -20,7 +20,7 @@
 | 端点 | scope | 语义 |
 |---|---|---|
 | `GET /v1/config/catalog-rules` | `knowledge.read` | 返回 `{configured, rule}`；未配置时 `configured=false` |
-| `PUT /v1/config/catalog-rules` | `knowledge.write` | 整体替换，幂等；`changed=false` 表示无变更；收紧规则使存量数据失效 → **409** |
+| `PUT /v1/config/catalog-rules` | `knowledge.write` | 整体替换，幂等；`changed=false` 表示无变更；收紧规则使存量数据失效 → **409**；过宽规则（能匹配 `1`/`abc`/空串）→ 200 + `warnings` 提示（不拒绝） |
 
 ## 3. 收紧/放宽语义
 

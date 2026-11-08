@@ -23,6 +23,7 @@ from fkh.domain.catalog_rules import (
     CatalogRuleConflict,
     CatalogRuleError,
     load_rule,
+    rule_warnings,
     save_rule,
 )
 from fkh.domain.domains import (
@@ -126,7 +127,12 @@ def put_catalog_rules(
             detail=str(exc),
             hint="catalog-rules: code_pattern must compile; currencies are 3-letter uppercase",
         ) from exc
-    return {"configured": True, "changed": changed, "rule": _rule_payload(rule)}
+    return {
+        "configured": True,
+        "changed": changed,
+        "rule": _rule_payload(rule),
+        "warnings": rule_warnings(rule),
+    }
 
 
 __all__ = ["router"]

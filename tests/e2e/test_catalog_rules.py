@@ -424,3 +424,25 @@ def test_put_sees_writes_committed_while_it_waited(
     finally:
         writer.close()
         upgrader.close()
+
+
+def test_broad_rule_saves_with_warning_not_rejection(
+    client: TestClient, factory: dict[str, Any]
+) -> None:
+    """L1 2026-11-08：过宽规则采用保存时警告，不按字面量拒绝。"""
+    broad = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": r"^\d+$", "currencies": ["CNY"]},
+        headers=_h(factory["token"]),
+    )
+    assert broad.status_code == 200, broad.text
+    assert broad.json()["warnings"], "过宽规则应给出警告"
+    assert "宽泛" in broad.json()["warnings"][0]
+
+    strict = client.put(
+        "/v1/config/catalog-rules",
+        json={"code_pattern": r"^SKU-[0-9]{4}-[0-9]{3}$", "currencies": ["CNY"]},
+        headers=_h(factory["token"]),
+    )
+    assert strict.status_code == 200, strict.text
+    assert strict.json()["warnings"] == []
