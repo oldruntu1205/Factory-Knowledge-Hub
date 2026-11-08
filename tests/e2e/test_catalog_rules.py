@@ -329,9 +329,13 @@ def test_put_sees_writes_committed_while_it_waited(
     writer = psycopg.connect(admin.info.dsn, autocommit=False)
     upgrader = psycopg.connect(admin.info.dsn, autocommit=False)
     outcome: list[BaseException | None] = []
+    backend_pids: list[int] = []
 
     def _put() -> None:
         upgrader.execute("SET lock_timeout = '8000ms'")
+        row = upgrader.execute("SELECT pg_backend_pid()").fetchone()
+        assert row is not None
+        backend_pids.append(int(row[0]))
         upgrader.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
         try:
             save_rule(upgrader, tenant, actor_id=actor,
@@ -364,7 +368,18 @@ def test_put_sees_writes_committed_while_it_waited(
 
         thread = threading.Thread(target=_put)
         thread.start()
-        time.sleep(0.4)  # 让 PUT 先进入等待
+        time.sleep(1.2)  # 让 PUT 先进入等待（含 SET/SHOW/绑定语句）
+
+        # 证明 PUT **确实在等待**（而不是只是"启动了线程"）：该表上应存在未授予的锁
+        with psycopg.connect(admin.info.dsn) as probe:
+            probe.execute("SET statement_timeout = '15000ms'")
+            assert backend_pids, "PUT 线程应已报告自己的 backend pid"
+            waiting = probe.execute(
+                "SELECT count(*) FROM pg_locks WHERE pid = %s AND NOT granted",
+                (backend_pids[0],),
+            ).fetchone()
+        assert waiting is not None and waiting[0] >= 1, "PUT 必须真正阻塞在锁上（未授予）"
+        assert not outcome, "PUT 在写入提交前不应有结果"
 
         # 提交：先补一个符合旧规则、但不符合新规则的货号条目
         writer.execute(

@@ -11,7 +11,7 @@
 | 引用 | 不建外键（规则是业务口径，不是引用完整性） |
 | 库层 | 只做**通用形状**：货号 1–64 字符且无空白；货币 `^[A-Z]{3}$` |
 | 应用层 | 统一用 Python `re.fullmatch`；规则由 `catalog_rules` 加载，**所有目录写入路径共用**：入库抽取、冲突决议、回填 |
-| 并发 | 写入路径读规则时取 **FOR SHARE** 并持有至事务结束；PUT 先取 **FOR UPDATE** 再检查存量 → 二者互斥（`test_rule_writes_and_updates_are_mutually_exclusive`）；PUT 要求 **READ COMMITTED**（否则拒绝），保证等待锁之后能看到等待期间提交的数据（`test_put_sees_writes_committed_while_it_waited`） |
+| 并发 | 写入路径读规则时取 **FOR SHARE** 并持有至事务结束；PUT 先取 **FOR UPDATE** 再检查存量 → 二者互斥（`test_rule_writes_and_updates_are_mutually_exclusive`）；PUT 要求 **READ COMMITTED**（否则拒绝），保证等待锁之后能看到等待期间提交的数据（`test_put_sees_writes_committed_while_it_waited`；用例先证明 PUT 的 backend pid 在 `pg_locks` 中**有未授予锁**，再提交写入） |
 | 缺规则 | 目录入库 → **422 可识别配置错误**（提示 `PUT /v1/config/catalog-rules`）；**读取与作答不受影响** |
 | 审计 | 每次实际变更写 `catalog_rule_revisions`（前后规则、操作者、版本号）；相同内容 PUT 不产生版本 |
 
