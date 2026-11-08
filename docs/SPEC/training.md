@@ -48,9 +48,9 @@
 | 能力 | 原因 |
 |---|---|
 | 及格线、补考次数、完成判定 | ADR-TRAIN-02 未签，不自行设定阈值；**当前完成判定 = 导师实操签核 PASS**（成绩不参与判定），这是待裁决占位而非最终规则 |
-| 实操签核端点 | 表与触发器已就绪，端点未实现 |
-| 培训问答 `/v1/training/ask` | 依赖生成链路（ADR-04/06） |
-| 培训反馈 `/v1/training/feedback` | 未实现 |
+| 实操签核端点 | **已实现**（`c0fa2d8`）：`mentor` scope + 导师授权台账（`0021`） |
+| 培训问答 `/v1/training/ask` | **已实现**（`c0fa2d8`）：与知识问答同一条闸门 |
+| 培训反馈 `/v1/training/feedback` | 仍未实现（501 占位） |
 | 学习进度与知识检索联动 | 待签核逻辑确定后再做 |
 
 ### 5.1 正文本读取（`GET /v1/training/assignments/{id}/content`）
@@ -71,3 +71,23 @@
 `tests/e2e/test_training_api.py`（10 项）：完整链路、改分被拒、发布缺知识源被拒、
 存在草稿题目被拒、幂等提交、跨学员提交被拒、重复分配幂等、未发布不可分配、
 他人进度 403、主观题转人工。
+
+## 7. 三通道一致性（2026-11-08 修复）
+
+**问题**：培训问答此前只限制了检索通道（`version_ids`），但**目录精确通道在检索之前运行**，
+既不接受课程来源限制，也不看分级。复现（基线 `1b1701d`）：学员在课程 A（检验规范）的任务里问
+`A112420 的规格是什么？` → 返回 `ANSWERED`，答案「A112420 的规格为 200mm 38*300 24*24；单价 39.00（CNY）」，
+引用指向**课程 B** 的目录版本。C3 课程源同理：正文读取 409，问答却仍能答。
+
+**修复**：`AnswerService.answer(only_version_ids, max_classification)` 把两个约束**同时**传给：
+1. 检索通道（已有 `version_ids`）；
+2. **目录精确通道**（`find_catalog_item` 新增 `version_ids` 与 `max_classification` SQL 条件）。
+
+培训侧 `approved_source_versions()` 同时按 `classification <= 2` 过滤；若课程源含 C3+ → 整课视为不可用
+（与正文读取的 409 一致），问答返回 409。
+
+**验收**（`tests/e2e/test_training_scope_unified.py`，真实 PG + 业务角色 + HTTP，3 条）：
+- 课程 A 里问课程 B 的货号 → 非 ANSWERED、不含规格/价格、引用不含 B 版本；
+- 本课程问题仍 ANSWERED，且引用集合恰好等于课程 A 的来源；
+- 目录通道**确实被走到**（审计 route 为 `catalog_exact`/`handoff`），不是被别的分支遮住；
+- C3 课程：正文 409 且问答 409。

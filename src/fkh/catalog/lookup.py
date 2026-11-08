@@ -78,6 +78,8 @@ def find_catalog_item(
     knowledge_scope: str,
     subject: Subject,
     internal: bool = True,
+    version_ids: tuple[UUID, ...] | None = None,
+    max_classification: int | None = None,
 ) -> CatalogLookup:
     """按货号查当前可检索的条目。
 
@@ -100,10 +102,19 @@ def find_catalog_item(
               AND v.required_scope = %(scope)s
               AND (v.effective_at IS NULL OR v.effective_at <= now())
               AND (v.expires_at IS NULL OR v.expires_at > now())
+              AND (%(versions)s::uuid[] IS NULL OR v.id = ANY(%(versions)s))
+              AND (%(max_class)s::int IS NULL OR v.classification <= %(max_class)s)
             ORDER BY v.version_no DESC, ci.created_at DESC""".replace(
             "{visibility}", VISIBILITY_SQL
         ),
-        {"tenant": tenant_id, "code": code, "scope": knowledge_scope, "internal": internal},
+        {
+            "tenant": tenant_id,
+            "code": code,
+            "scope": knowledge_scope,
+            "internal": internal,
+            "versions": list(version_ids) if version_ids else None,
+            "max_class": max_classification,
+        },
     ).fetchall()
 
     visible: list[tuple[Any, ...]] = []

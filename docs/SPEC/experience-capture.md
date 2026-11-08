@@ -23,7 +23,7 @@
 | 端点 | scope | 说明 |
 |---|---|---|
 | `POST /v1/interviews/consents` | `interview.create` | 只允许本人授权 |
-| `POST /v1/interviews/consents/{id}/revoke` | `interview.create` | 删转写 + 作废草稿 + 访谈 WITHDRAWN |
+| `POST /v1/interviews/consents/{id}/revoke` | `interview.create` + 本人 | 删转写 + 清空草稿内容载荷 + 访谈 WITHDRAWN；非本人 403、重复撤回 409 |
 | `POST /v1/interviews` | `interview.create` | **只能由授权本人建立**（采集者持 scope 也不能用他人授权）；主体不一致 / 已撤回 → 409；授权不存在 → 403 |
 | `POST /v1/interviews/{id}/transcript` | `interview.create` | 只写 RAW 表 |
 | `POST /v1/interviews/{id}/drafts` | `interview.create` | 只做结构化（不做模型总结） |
@@ -64,3 +64,19 @@
   实测：直接 `UPDATE ... SET status='REVOKED'` 会被 `fkh_version_transition` 触发器拒绝
   （`DRAFT → REVOKED` 非法），所以必须走领域方法。
 - 验收：晋升前 409；晋升后检索不到（DRAFT）；撤回后 `versions_revoked` 含该版本且问答不再命中。
+
+## 8. 撤回的权限与并发（2026-11-08 修复）
+
+基线 `1b1701d` 的问题：`revoke_consent` 不校验调用者是否为授权本人；重复撤回静默通过；
+撤回与转写/审核/晋升之间没有行锁。
+
+| 规则 | 实现与验收 |
+|---|---|
+| 只有授权本人能撤回 | 先 `FOR UPDATE` 锁授权行；`subject_id != actor_subject` → **403**（与不存在同码，不探测） |
+| 尚未建访谈时可撤回 | **200**，`interviews/transcripts_deleted/drafts_withdrawn` 全 0 |
+| 重复撤回 | 第二次 **409** |
+| 撤回 vs 转写/审核/晋升 | 写入方对授权行取 **FOR SHARE**：撤回未提交时写入阻塞；撤回提交后读到已撤回 → 409，且表内无残留行 |
+| 已晋升内容 | 撤回时按状态机 `discard`（DRAFT/REVIEWED）/ `revoke`（APPROVED_INTERNAL/PUBLISHED_PUBLIC），检索立即为空 |
+
+验收：`tests/e2e/test_interview_revoke.py`（5 条，真实 PG + 业务角色 + HTTP，含两条连接的真实并发用例）。
+期间还修掉一个真实缺陷：`revoked_versions` 在"没有访谈"的分支里未初始化，导致 500。

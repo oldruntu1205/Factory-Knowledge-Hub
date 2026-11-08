@@ -57,6 +57,7 @@ def run_answer(
     embedder: Any = None,
     retrieval_mode: str | None = None,
     only_version_ids: tuple[Any, ...] | None = None,
+    max_classification: int | None = None,
 ) -> dict[str, Any]:
     """执行一次问答，返回契约响应体（dict）。
 
@@ -98,6 +99,7 @@ def run_answer(
                 trace_id=trace_id,
             ),
             only_version_ids=only_version_ids,
+            max_classification=max_classification,
         )
     except SearchScopeNotAuthorized as exc:
         raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"knowledge_scope 未授权: {exc}") from exc

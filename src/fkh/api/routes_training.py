@@ -305,4 +305,5 @@ def training_ask(
         embedder=embedder,
         retrieval_mode=mode,
         only_version_ids=allowed_versions,
+        max_classification=2,
     )

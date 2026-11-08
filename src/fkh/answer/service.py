@@ -207,6 +207,7 @@ class AnswerService:
         max_evidence: int,
         context: SearchContext,
         only_version_ids: tuple[UUID, ...] | None = None,
+        max_classification: int | None = None,
     ) -> AnswerOutcome:
         trace_id = context.trace_id
         # 审计只能存摘要：先算哈希，算不出来（无密钥）就不具备审计条件
@@ -252,6 +253,8 @@ class AnswerService:
             query,
             knowledge_scope=knowledge_scope,
             context=context,
+            only_version_ids=only_version_ids,
+            max_classification=max_classification,
             query_hash=query_hash,
         )
         if catalog_outcome is not None:
@@ -417,6 +420,8 @@ class AnswerService:
         *,
         knowledge_scope: str,
         context: SearchContext,
+        only_version_ids: tuple[UUID, ...] | None = None,
+        max_classification: int | None = None,
         query_hash: str | None,
     ) -> tuple[AnswerOutcome | None, str | None]:
         """确定性目录通道。返回 (结果, 未路由原因)。
@@ -445,6 +450,9 @@ class AnswerService:
             knowledge_scope=knowledge_scope,
             subject=context.subject,
             internal=not is_external_customer(context.allowed_scopes),
+            # 培训问答与普通问答共用"当前任务的课程来源 + 分级"（2026-11-08）
+            version_ids=only_version_ids,
+            max_classification=max_classification,
         )
 
         if lookup.ambiguous:

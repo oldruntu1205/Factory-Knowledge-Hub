@@ -577,7 +577,7 @@ class TrainingService:
         """
         self._bind()
         rows = self._conn.execute(
-            """SELECT s.knowledge_version_id, v.status
+            """SELECT s.knowledge_version_id, v.status, v.classification
                  FROM training_assignments a
                  JOIN training_courses c
                    ON c.tenant_id = a.tenant_id AND c.course_id = a.course_id
@@ -589,9 +589,14 @@ class TrainingService:
                   AND a.learner_subject_id = %s AND c.status = 'PUBLISHED'""",
             (self._tenant, assignment_id, learner_subject_id),
         ).fetchall()
-        return tuple(
-            uuid.UUID(str(row[0])) for row in rows if str(row[1]) == "APPROVED_INTERNAL"
-        )
+        usable = [row for row in rows if str(row[1]) == "APPROVED_INTERNAL"]
+        if not usable:
+            return ()
+        # 分级规则与正文读取一致：C3+ 暂无学员授权口径 → 整课不可用于问答
+        elevated = [int(row[2]) for row in usable if int(row[2]) >= 3]
+        if elevated:
+            raise TrainingError(f"课程源含暂无授权口径的分级 C{max(elevated)}，问答不可用")
+        return tuple(uuid.UUID(str(row[0])) for row in usable)
 
     def content_page(
         self,

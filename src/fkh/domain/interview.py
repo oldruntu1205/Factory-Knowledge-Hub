@@ -110,12 +110,20 @@ class InterviewService:
     ) -> dict[str, Any]:
         """撤回授权：删除该授权下所有转写，作废未发布草稿，访谈转 WITHDRAWN。"""
         self._bind()
-        consent = self.consent(consent_id)
-        if consent is None:
+        # 先锁住授权行：与并发写入（转写/审核/晋升）在同一行上串行化
+        locked = self._conn.execute(
+            """SELECT subject_id, revoked_at FROM interview_consents
+                WHERE tenant_id = %s AND consent_id = %s FOR UPDATE""",
+            (self._tenant, consent_id),
+        ).fetchone()
+        if locked is None or str(locked[0]) != actor_subject:
+            # 非本人撤回：与"不存在"同码，避免用错误码探测他人授权
             raise InterviewNotFound(str(consent_id))
+        if locked[1] is not None:
+            raise InterviewError("授权已撤回，不能重复撤回")
         self._conn.execute(
             "UPDATE interview_consents SET revoked_at = now()"
-            " WHERE tenant_id = %s AND consent_id = %s AND revoked_at IS NULL",
+            " WHERE tenant_id = %s AND consent_id = %s",
             (self._tenant, consent_id),
         )
         interviews = self._conn.execute(
@@ -125,6 +133,7 @@ class InterviewService:
         interview_ids = [uuid.UUID(str(row[0])) for row in interviews]
         removed_transcripts = 0
         withdrawn_drafts = 0
+        revoked_versions: list[str] = []
         if interview_ids:
             # 先作废草稿（保留行与证据位供审计），再删转写；
             # FK 为 ON DELETE SET NULL (transcript_id)，草稿行不会被级联带走。
@@ -162,7 +171,6 @@ class InterviewService:
                       AND d.promoted_version_id IS NOT NULL""",
                 (self._tenant, interview_ids),
             ).fetchall()
-            revoked_versions: list[str] = []
             if promoted:
                 # 走状态机认可的路径：未发布的走 discard（DRAFT/REVIEWED → DISCARDED），
                 # 已批准的走 revoke（APPROVED_INTERNAL/PUBLISHED_PUBLIC → REVOKED）。
@@ -252,7 +260,7 @@ class InterviewService:
             raise InterviewNotFound(str(interview_id))
         if str(row[0]) != "CONSENTED":
             raise InterviewError(f"当前状态 {row[0]} 不接受新转写")
-        if self._consent_revoked(interview_id):
+        if self._consent_revoked(interview_id, lock=True):
             raise InterviewError("授权已撤回，不能登记转写")
         if not content.strip():
             raise InterviewError("转写内容为空")
@@ -284,7 +292,7 @@ class InterviewService:
         ).fetchone()
         if owner is None or str(owner[0]) != actor:
             raise InterviewNotFound(str(interview_id))
-        if self._consent_revoked(interview_id):
+        if self._consent_revoked(interview_id, lock=True):
             raise InterviewError("授权已撤回，不能生成草稿")
         row = self._conn.execute(
             """SELECT t.transcript_id, t.content FROM interview_transcripts t
@@ -338,14 +346,14 @@ class InterviewService:
         self._bind()
         if decision not in {"APPROVE", "REJECT"}:
             raise InterviewError(f"decision 非法：{decision}")
-        revoked = self._conn.execute(
-            """SELECT 1 FROM experience_drafts d
+        consent_row = self._conn.execute(
+            """SELECT c.revoked_at FROM experience_drafts d
                  JOIN interviews i ON i.tenant_id = d.tenant_id AND i.interview_id = d.interview_id
                  JOIN interview_consents c ON c.tenant_id = i.tenant_id AND c.consent_id = i.consent_id
-                WHERE d.tenant_id = %s AND d.draft_id = %s AND c.revoked_at IS NOT NULL""",
+                WHERE d.tenant_id = %s AND d.draft_id = %s FOR SHARE OF c""",
             (self._tenant, draft_id),
         ).fetchone()
-        if revoked is not None:
+        if consent_row is not None and consent_row[0] is not None:
             raise InterviewError("授权已撤回，不能审核")
         row = self._conn.execute(
             """SELECT interview_id, status FROM experience_drafts
@@ -409,7 +417,7 @@ class InterviewService:
             raise InterviewError(f"只有已批准的草稿可晋升，当前为 {draft_status}")
         if interview_status == "WITHDRAWN":
             raise InterviewError("访谈已撤回授权，不能晋升")
-        if self._consent_revoked(uuid.UUID(str(row[6]))):
+        if self._consent_revoked(uuid.UUID(str(row[6])), lock=True):
             raise InterviewError("授权已撤回，不能晋升")
 
         body_parts = [f"采访记录（{actor_subject} 录入）", "", f"结论：{row[2]}"]
@@ -498,12 +506,19 @@ class InterviewService:
         }
 
 
-    def _consent_revoked(self, interview_id: uuid.UUID) -> bool:
+    def _consent_revoked(self, interview_id: uuid.UUID, *, lock: bool = False) -> bool:
+        """检查访谈所依赖的授权是否已撤回。
+
+        `lock=True` 时对授权行加 **FOR SHARE**：若撤回事务正在执行（持 FOR UPDATE），
+        这里会等待；撤回提交后读到的就是"已撤回"，写入因此必然失败——
+        这样"撤回与转写/审核/晋升并发"不会留下撤回后写入的内容。
+        """
+        suffix = " FOR SHARE" if lock else ""
         row = self._conn.execute(
             """SELECT c.revoked_at FROM interviews i
                  JOIN interview_consents c
                    ON c.tenant_id = i.tenant_id AND c.consent_id = i.consent_id
-                WHERE i.tenant_id = %s AND i.interview_id = %s""",
+                WHERE i.tenant_id = %s AND i.interview_id = %s""" + suffix,
             (self._tenant, interview_id),
         ).fetchone()
         return row is not None and row[0] is not None
