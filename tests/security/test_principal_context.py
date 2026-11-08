@@ -22,11 +22,11 @@ from fkh.config import Settings
 SECRET = "principal-context-secret-0123456789abcdef"
 
 
-def _settings() -> Settings:
-    return Settings(jwt_secret=SECRET)
+def _settings(*, previous: list[str] | None = None) -> Settings:
+    return Settings(jwt_secret=SECRET, jwt_previous_secrets=previous or [])
 
 
-def _token(**overrides: Any) -> str:
+def _token(*, secret: str = SECRET, **overrides: Any) -> str:
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "iss": "fkh.local",
@@ -41,7 +41,7 @@ def _token(**overrides: Any) -> str:
         "allowed_scopes": ["internal_product"],
     }
     payload.update(overrides)
-    return jwt.encode(payload, SECRET, algorithm="HS256")
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 def test_groups_and_departments_are_parsed() -> None:
@@ -94,3 +94,31 @@ def test_group_policy_denied_when_token_lacks_group() -> None:
 def test_invalid_scope_claim_type_rejected() -> None:
     with pytest.raises(ApiError):
         decode_token(_token(roles=123), _settings())
+
+
+def test_previous_secret_accepted_during_rotation_grace() -> None:
+    old = "old-rotation-secret-0123456789abcdef"
+    new = "new-rotation-secret-0123456789abcdef"
+    settings = Settings(jwt_secret=new, jwt_previous_secrets=[old])
+
+    # 旧令牌在宽限期内仍可通过；新令牌用当前密钥也通过
+    assert decode_token(_token(secret=old), settings).subject
+    assert decode_token(_token(secret=new), settings).subject
+
+
+def test_previous_secret_rejected_after_retirement() -> None:
+    old = "old-rotation-secret-0123456789abcdef"
+    new = "new-rotation-secret-0123456789abcdef"
+    settings = Settings(jwt_secret=new, jwt_previous_secrets=[])
+
+    with pytest.raises(ApiError):
+        decode_token(_token(secret=old), settings)
+
+
+def test_unknown_secret_rejected_even_with_previous_key() -> None:
+    settings = Settings(
+        jwt_secret="new-rotation-secret-0123456789abcdef",
+        jwt_previous_secrets=["old-rotation-secret-0123456789abcdef"],
+    )
+    with pytest.raises(ApiError):
+        decode_token(_token(secret="attacker-secret-0123456789abcdef"), settings)

@@ -77,21 +77,44 @@ def _as_str_set(value: Any) -> frozenset[str]:
 
 
 def decode_token(token: str, settings: Settings) -> PrincipalContext:
-    if not settings.jwt_secret:
+    """校验令牌；轮换宽限期内同时接受当前密钥与旧密钥。
+
+    旧密钥**只验签、不签发**：`serve` 把当前密钥放 `FKH_JWT_SECRET`，旧密钥放
+    `FKH_JWT_PREVIOUS_SECRETS`；宽限期结束后由 `retire-jwt-previous` 删除旧文件，
+    旧令牌自然 401。不要把这条路径扩成"任意密钥都试"，candidates 只来自实例配置。
+    """
+    # 去重并限制尝试数量：配置故障不应把验签成本放大到无界。
+    candidates = list(
+        dict.fromkeys(
+            secret
+            for secret in [settings.jwt_secret, *settings.jwt_previous_secrets]
+            if secret
+        )
+    )[:3]
+    if not candidates:
         # ADR-02 未签署：不提供任何可用身份源
         raise ApiError(ErrorCode.UNAUTHENTICATED, detail="身份源未配置")
 
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-            audience=settings.jwt_audience,
-            issuer=settings.jwt_issuer,
-            options={"require": ["exp", "iss", "aud", "sub"]},
+    payload: dict[str, Any] | None = None
+    last_error: jwt.InvalidTokenError | None = None
+    for secret in candidates:
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=[settings.jwt_algorithm],
+                audience=settings.jwt_audience,
+                issuer=settings.jwt_issuer,
+                options={"require": ["exp", "iss", "aud", "sub"]},
+            )
+            break
+        except jwt.InvalidTokenError as exc:
+            last_error = exc
+    if payload is None:
+        raise ApiError(
+            ErrorCode.UNAUTHENTICATED,
+            detail=str(last_error) if last_error is not None else "令牌无效",
         )
-    except jwt.InvalidTokenError as exc:
-        raise ApiError(ErrorCode.UNAUTHENTICATED, detail=str(exc)) from exc
 
     return PrincipalContext(
         tenant_id=_as_uuid(payload.get("tenant_id"), "tenant_id"),

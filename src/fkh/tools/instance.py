@@ -59,7 +59,12 @@ DEFAULT_DOMAINS = (
 DEFAULT_CATALOG_PATTERN = r"^[A-Z]{2}-[0-9]{4}$"
 DEFAULT_CURRENCIES = ["CNY"]
 
-SECRET_FILES = {"jwt": "jwt.secret", "db_admin": "db-admin.password", "db_app": "db-app.password"}
+SECRET_FILES = {
+    "jwt": "jwt.secret",
+    "jwt_previous": "jwt.previous.secret",
+    "db_admin": "db-admin.password",
+    "db_app": "db-app.password",
+}
 
 
 # ---------------------------------------------------------------- 密钥与连接串
@@ -84,7 +89,15 @@ def _write_instance(workdir: Path, data: dict[str, Any]) -> None:
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     hidden = {"jwt_secret", "db_password", "admin_password", "app_password"}
     assert not any(f'"{name}"' in payload for name in hidden), "instance.json 不得包含密钥"
-    path.write_text(payload, encoding="utf-8")
+    # 元数据也要原子更新：轮换失败时不能留下半写的 instance.json
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def harden_secrets(workdir: Path) -> list[str]:
@@ -517,6 +530,7 @@ def command_provision(args: argparse.Namespace) -> int:
     role = _role_name(args.db_name)
     _ensure_business_role(root_dsn, db_dsn, role, app_pw)
 
+    created_at = datetime.now(UTC).isoformat()
     record: dict[str, Any] = {
         "schema": SCHEMA_VERSION,
         "name": args.name,
@@ -529,7 +543,13 @@ def command_provision(args: argparse.Namespace) -> int:
         "api_port": args.api_port,
         "secret_dir": "secrets",
         "domains": [code for code, _ in DEFAULT_DOMAINS],
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": created_at,
+        # 密钥元数据：只放标识与时间，不放任何密钥/Toke
+        "jwt_key_id": "jwt-1",
+        "retrieval_key_id": f"k-{args.name[:8]}",
+        "jwt_rotated_at": created_at,
+        "db_app_rotated_at": created_at,
+        "rotation_seq": 0,
     }
     _write_secret(secret_path(workdir, "jwt"), _new_secret())
 
@@ -614,6 +634,7 @@ def command_serve(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
     record = load_instance(workdir)
     harden_secrets(workdir)  # 先确认密钥目录/文件只有本账户可读（老实例自愈）
+    _assert_no_pending_secret_files(workdir)  # 轮换失败留下的 .new 不能带着未决状态启动
     secret = _read_secret(workdir, "jwt")  # 校验既有密钥（缺失/过短/占位直接拒绝）
     _refuse_if_busy(int(record["api_port"]), what="API")
 
@@ -622,6 +643,10 @@ def command_serve(args: argparse.Namespace) -> int:
         superuser_password=_read_secret(workdir, "db_admin"),
     )
 
+    # 轮换宽限期：旧密钥只用于验签。文件不存在 = 已退役，旧令牌自然 401。
+    previous_path = secret_path(workdir, "jwt_previous")
+    previous = _read_secret(workdir, "jwt_previous") if previous_path.exists() else None
+
     # 进程身份随机串：只写进本次子进程环境与 pid 文件。
     # stop 用它证明"这个 pid 就是本次 serve 起来的 API"，而不是另一个 uvicorn 服务。
     pid_nonce = secrets.token_hex(16)
@@ -629,9 +654,12 @@ def command_serve(args: argparse.Namespace) -> int:
     env.update(
         {
             "FKH_JWT_SECRET": secret,
+            "FKH_JWT_PREVIOUS_SECRETS": json.dumps([previous] if previous else []),
             "FKH_DATABASE_URL": _dsn(record, kind="app"),  # 口令只在环境变量里，不进 argv
             "FKH_RETRIEVAL_HASH_KEY": secret[:32],
-            "FKH_RETRIEVAL_HASH_KEY_ID": f"k-{record['name'][:8]}",
+            "FKH_RETRIEVAL_HASH_KEY_ID": str(
+                record.get("retrieval_key_id") or f"k-{record['name'][:8]}"
+            ),
             "FKH_INSTANCE_PID_NONCE": pid_nonce,
             "FKH_LOG_LEVEL": env.get("FKH_LOG_LEVEL", "info"),
         }
@@ -826,6 +854,234 @@ def command_stop(args: argparse.Namespace) -> int:
     if postgres_status(Path(record["pgdata"])):
         raise SystemExit("内嵌 PostgreSQL 仍在运行，停止未完成")
     print(json.dumps({"stopped": True, "api_was_running": stopped_api}))
+    return 0
+
+
+# ---------------------------------------------------------------- 密钥轮换
+def _assert_api_stopped(workdir: Path, record: dict[str, Any]) -> None:
+    """轮换要求 API 停止：否则旧进程仍持有旧密钥/旧口令，重启前状态不可解释。"""
+    api_port = int(record["api_port"])
+    owner = port_owner(api_port)
+    if owner is not None:
+        raise SystemExit(
+            f"API 仍在端口 {api_port} 监听（pid={owner['pid']}）；请先 stop 再轮换"
+        )
+    pid_file = workdir / "api.pid"
+    if pid_file.exists():
+        info = _read_pid_file(pid_file)
+        pid = int(info["pid"] or 0)
+        if pid:
+            verdict = _classify_api_process(
+                pid, api_port=api_port, db_port=int(record["db_port"]),
+                db_name=str(record["db_name"]), nonce=info["nonce"],
+            )
+            if verdict.state == "ours":
+                raise SystemExit(f"本实例 API 进程 pid={pid} 仍在运行；请先 stop 再轮换")
+
+
+PENDING_SECRET_SUFFIXES = (
+    "jwt.secret.new",
+    "jwt.previous.secret.new",
+    "db-app.password.new",
+)
+
+
+def _pending_secret_files(workdir: Path) -> list[Path]:
+    secrets_dir = workdir / "secrets"
+    return [secrets_dir / name for name in PENDING_SECRET_SUFFIXES if (secrets_dir / name).exists()]
+
+
+def _assert_no_pending_secret_files(workdir: Path) -> None:
+    pending = _pending_secret_files(workdir)
+    if pending:
+        joined = "、".join(str(path) for path in pending)
+        raise SystemExit(
+            f"检测到待恢复的临时密钥文件：{joined}；先确认当前生效的密钥/口令并处理这些文件，"
+            "再继续（不会自动覆盖）"
+        )
+
+
+class _PasswordChangeUncertain(RuntimeError):
+    """ALTER ROLE 已发出但连接中断：服务端可能已经提交，不能假定旧口令仍有效。"""
+
+
+def _alter_role_password(root_dsn: str, role: str, password: str) -> None:
+    """在显式事务里改口令，区分"服务端拒绝"与"结果不确定"。
+
+    - `DatabaseError`：服务端明确拒绝，事务未提交，可确认旧口令仍有效；
+    - `OperationalError`/`InterfaceError`/其它连接类异常：可能提交后才断开，
+      调用方必须保留新口令文件并报告"待确认"。
+    """
+    try:
+        with psycopg.connect(root_dsn, autocommit=False) as conn:
+            conn.execute(f'ALTER ROLE "{role}" PASSWORD {_sql_literal(password)}')
+            conn.commit()
+    except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+        # 连接类异常可能发生在服务端提交之后：不能据此认定旧口令仍有效
+        raise _PasswordChangeUncertain(str(exc)) from exc
+    except psycopg.errors.DatabaseError as exc:
+        # 服务端明确返回错误，事务未提交
+        raise SystemExit(f"ALTER ROLE 被 PostgreSQL 拒绝：{exc}") from exc
+
+
+def _atomic_write_secret(path: Path, value: str) -> None:
+    """先写同目录 .new，再原子替换；替换失败时保留 .new 供人工恢复。"""
+    tmp = path.with_name(path.name + ".new")
+    _write_secret(tmp, value)
+    try:
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise SystemExit(
+            f"密钥已写入 {tmp}，但替换 {path} 失败：{exc}；请人工检查后重试"
+        ) from exc
+
+
+def _update_record(workdir: Path, record: dict[str, Any], **changes: Any) -> None:
+    record.update(changes)
+    _write_instance(workdir, record)
+
+
+def command_rotate_keys(args: argparse.Namespace) -> int:
+    """轮换 JWT 签名密钥与 DB 应用角色口令（要求 API 已停止）。
+
+    - JWT：当前密钥写入 `jwt.previous.secret` 作为宽限期验签密钥，新密钥写入
+      `jwt.secret`；旧令牌在下次重启后仍有效，直到 `retire-jwt-previous`。
+    - DB：`ALTER ROLE <app> PASSWORD`，新口令原子替换 `db-app.password`；
+      管理员口令不在此轮换（避免一次操作同时改两类运维凭据）。
+    """
+    workdir = Path(args.workdir).resolve()
+    record = load_instance(workdir)
+    _assert_api_stopped(workdir, record)
+    _assert_no_pending_secret_files(workdir)
+    if secret_path(workdir, "jwt_previous").exists() and not args.force:
+        raise SystemExit(
+            "宽限期旧 JWT 密钥仍在；先 retire-jwt-previous，"
+            "或加 --force（会让更早签发的令牌提前失效）"
+        )
+
+    seq = int(record.get("rotation_seq") or 0) + 1
+    now = datetime.now(UTC).isoformat()
+    jwt_key_id = f"jwt-{seq + 1}"
+    retrieval_key_id = f"k-{record['name'][:8]}-r{seq}"
+    history = list(record.get("rotation_history") or [])
+
+    def record_event(event: str, **fields: Any) -> None:
+        history.append({"at": datetime.now(UTC).isoformat(), "event": event, **fields})
+        del history[:-20]  # 只留最近 20 条，避免元数据无限增长
+
+    # JWT：先保留旧密钥，再替换当前密钥。任一步失败都不会丢掉旧密钥。
+    current_jwt = _read_secret(workdir, "jwt")
+    _atomic_write_secret(secret_path(workdir, "jwt_previous"), current_jwt)
+    new_jwt = _new_secret()
+    _atomic_write_secret(secret_path(workdir, "jwt"), new_jwt)
+    record_event("jwt_rotated", jwt_key_id=jwt_key_id, retrieval_key_id=retrieval_key_id)
+    _update_record(
+        workdir,
+        record,
+        rotation_seq=seq,
+        jwt_key_id=jwt_key_id,
+        retrieval_key_id=retrieval_key_id,
+        jwt_rotated_at=now,
+        rotation_history=history,
+    )
+
+    # DB 应用口令：先写 .new，ALTER 成功后再原子替换；API 已停止，无新连接使用旧口令。
+    pgdata = Path(record["pgdata"])
+    pg_was_running = postgres_status(pgdata)
+    root_dsn = ensure_postgres(
+        pgdata, int(record["db_port"]),
+        superuser_password=_read_secret(workdir, "db_admin"),
+    )
+    new_app = _new_secret()
+    app_path = secret_path(workdir, "db_app")
+    tmp_app = app_path.with_name(app_path.name + ".new")
+    _write_secret(tmp_app, new_app)
+    try:
+        _alter_role_password(root_dsn, str(record["app_role"]), new_app)
+    except _PasswordChangeUncertain as exc:
+        # 连接中断可能发生在服务端提交之后：保留新口令文件，不能删除、不能假装旧口令仍有效。
+        record_event(
+            "db_app_rotated_unconfirmed",
+            pending_file=str(tmp_app),
+            postgres_left_running=True,
+        )
+        _update_record(workdir, record, rotation_history=history)
+        raise SystemExit(
+            f"DB 口令变更结果待确认（连接中断，可能已生效）：{exc}；"
+            f"新口令保存在 {tmp_app}（私有 ACL）。请先分别用旧/新口令测试登录，"
+            "确认后再替换 db-app.password；在 pending 文件存在期间 rotate/serve 会拒绝继续"
+        ) from exc
+    except BaseException:
+        tmp_app.unlink(missing_ok=True)
+        if not pg_was_running:
+            stop_postgres(pgdata)
+        raise
+    try:
+        os.replace(tmp_app, app_path)
+    except OSError as exc:
+        record_event(
+            "db_app_replace_failed",
+            pending_file=str(tmp_app),
+            postgres_left_running=pg_was_running,
+        )
+        _update_record(workdir, record, rotation_history=history)
+        if not pg_was_running:
+            stop_postgres(pgdata)
+        raise SystemExit(
+            f"数据库口令已更新，但替换 {app_path} 失败：{exc}；"
+            f"新口令在 {tmp_app}（私有 ACL），请人工替换后重启"
+        ) from exc
+
+    # 用新口令实际登录一次，避免"文件换了但连不上"被当成成功
+    try:
+        with psycopg.connect(_dsn(record, kind="app"), connect_timeout=5) as conn:
+            conn.execute("SELECT 1")
+    except psycopg.Error as exc:
+        record_event("db_app_verify_failed", postgres_left_running=pg_was_running)
+        _update_record(workdir, record, rotation_history=history)
+        if not pg_was_running:
+            stop_postgres(pgdata)
+        raise SystemExit(f"新 DB 口令无法登录，轮换未完成：{exc}") from exc
+    record_event("db_app_rotated")
+    _update_record(workdir, record, db_app_rotated_at=now, rotation_history=history)
+    if not pg_was_running:
+        stop_postgres(pgdata)
+        if postgres_status(pgdata):
+            raise SystemExit("轮换后内嵌 PostgreSQL 未能停止，请人工处理")
+
+    print(json.dumps({
+        "rotated": True,
+        "jwt_key_id": jwt_key_id,
+        "retrieval_key_id": retrieval_key_id,
+        "previous_grace": True,
+        "restart_required": True,
+        "db_app_rotated": True,
+    }, ensure_ascii=False))
+    return 0
+
+
+def command_retire_jwt_previous(args: argparse.Namespace) -> int:
+    """删除宽限期旧 JWT 密钥；下次重启后旧令牌一律 401。要求 API 已停止。"""
+    workdir = Path(args.workdir).resolve()
+    record = load_instance(workdir)
+    _assert_api_stopped(workdir, record)
+    _assert_no_pending_secret_files(workdir)
+    path = secret_path(workdir, "jwt_previous")
+    existed = path.exists()
+    path.unlink(missing_ok=True)
+    history = list(record.get("rotation_history") or [])
+    history.append({
+        "at": datetime.now(UTC).isoformat(),
+        "event": "jwt_previous_retired",
+        "existed": existed,
+    })
+    del history[:-20]
+    _update_record(
+        workdir, record,
+        jwt_previous_retired_at=datetime.now(UTC).isoformat(),
+        rotation_history=history,
+    )
+    print(json.dumps({"retired": existed, "restart_required": True}, ensure_ascii=False))
     return 0
 
 
@@ -1035,6 +1291,7 @@ def command_restore(args: argparse.Namespace) -> int:
                     (tenant,),
                 ).fetchall()
             ]
+        created_at = datetime.now(UTC).isoformat()
         record: dict[str, Any] = {
             "schema": SCHEMA_VERSION,
             "name": args.name,
@@ -1047,7 +1304,12 @@ def command_restore(args: argparse.Namespace) -> int:
             "api_port": args.api_port,
             "secret_dir": "secrets",
             "domains": domains,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at,
+            "jwt_key_id": "jwt-1",
+            "retrieval_key_id": f"k-{args.name[:8]}",
+            "jwt_rotated_at": created_at,
+            "db_app_rotated_at": created_at,
+            "rotation_seq": 0,
             "restored_from": str(dump),
             "tenant_id": tenant,
             "ops_principal": next((str(p[0]) for p in principals if str(p[1]) == "user"), None),
@@ -1179,6 +1441,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     harden_cmd.add_argument("--workdir", required=True)
     harden_cmd.set_defaults(func=command_harden_secrets)
+
+    rotate = sub.add_parser(
+        "rotate-keys", help="轮换 JWT 密钥与 DB 应用口令（要求 API 已停止；JWT 旧密钥进入宽限期）"
+    )
+    rotate.add_argument("--workdir", required=True)
+    rotate.add_argument(
+        "--force", action="store_true",
+        help="宽限期旧密钥仍在时仍轮换（会使更早签发的令牌提前失效）",
+    )
+    rotate.set_defaults(func=command_rotate_keys)
+
+    retire = sub.add_parser(
+        "retire-jwt-previous", help="删除宽限期的旧 JWT 密钥；下次重启后旧令牌 401"
+    )
+    retire.add_argument("--workdir", required=True)
+    retire.set_defaults(func=command_retire_jwt_previous)
 
     status = sub.add_parser("status", help="查看实例数据面（计数/版本/角色权限）")
     status.add_argument("--workdir", required=True)

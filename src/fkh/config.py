@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,9 @@ class Settings(BaseSettings):
 
     # 身份：ADR-02 未签署前只支持本地 HS256；生产应改为 OIDC + JWKS
     jwt_secret: str | None = None
+    # 轮换宽限期：旧密钥只用于验签，不用于签发；顺序无关，命中即通过。
+    # 由实例工具在 rotate-keys 后注入，宽限期结束用 retire-jwt-previous 删除。
+    jwt_previous_secrets: list[str] = Field(default_factory=list, max_length=2)
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "fkh.local"
     jwt_audience: str = "fkh-api"

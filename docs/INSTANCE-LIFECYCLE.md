@@ -49,6 +49,41 @@ pid 文件指向另一个服务时**拒绝停止，且不碰对方进程**；进
 uv run python -m fkh.tools.instance harden-secrets --workdir .instance-customer-x
 ```
 
+### 密钥轮换（JWT + DB 应用口令）
+
+```powershell
+uv run python -m fkh.tools.instance stop --workdir .instance-customer-x
+uv run python -m fkh.tools.instance rotate-keys --workdir .instance-customer-x
+uv run python -m fkh.tools.instance serve --workdir .instance-customer-x
+
+# 宽限期结束（建议 ≥ 最长令牌有效期）后
+uv run python -m fkh.tools.instance stop --workdir .instance-customer-x
+uv run python -m fkh.tools.instance retire-jwt-previous --workdir .instance-customer-x
+uv run python -m fkh.tools.instance serve --workdir .instance-customer-x
+```
+
+| 项 | 语义 |
+|---|---|
+| 前置 | `rotate-keys` / `retire-jwt-previous` 要求 API 已停止（避免新旧密钥并存期间状态不可解释） |
+| JWT | 旧密钥写入 `secrets/jwt.previous.secret`，**只验签不签发**；新令牌用 `secrets/jwt.secret` 签；宽限期内旧令牌仍 200 |
+| 二次轮换 | 宽限期旧密钥仍在时默认拒绝；确认要提前淘汰更早令牌才加 `--force`（会让更早一代令牌提前失效） |
+| 退役 | `retire-jwt-previous` 删除旧密钥；**重启后**旧令牌立即 401 |
+| DB | `ALTER ROLE <app_role> PASSWORD` 立即生效；旧应用口令马上失效；**管理员口令不在此命令轮换** |
+| DB 失败语义 | `ALTER ROLE` 在显式事务中执行。服务端明确拒绝 → 删除 `.new`，旧口令不变；连接中断等**结果不确定** → 保留私有 `.new`、返回非 0、报告"DB 状态待确认"，不假装旧口令仍有效 |
+| 待恢复文件 | `jwt.secret.new` / `jwt.previous.secret.new` / `db-app.password.new` 任一存在时，`serve` / `rotate-keys` / `retire-jwt-previous` 都会拒绝继续，必须先人工确认当前生效的密钥并处理 `.new` |
+| 审计 | `retrieval_key_id` 随轮换更新为 `k-<name>-r<n>`；旧审计行的 key id 保持不变；`instance.json` 的 `rotation_history` 记录最近 20 条轮换事件（不含密钥） |
+| 元数据 | `instance.json` 只记录 `jwt_key_id` / `retrieval_key_id` / 轮换时间 / 轮换事件，不含任何密钥 |
+
+若 `rotate-keys` 报告"DB 口令变更结果待确认"，按以下顺序人工核查（不要直接覆盖 `.new`）：
+
+1. 用旧 `db-app.password` 连一次业务库；用 `.new` 文件里的口令再连一次；
+2. **新口令能连、旧口令不能连**：说明 ALTER 已生效，把 `.new` 替换成 `db-app.password`，重启；
+3. **旧口令能连、新口令不能连**：说明 ALTER 未生效，删除 `.new`，重启后再重试轮换；
+4. 两者都能连/都不能连：属于异常状态，先不要启动服务，检查 `pg_roles` / 连接串 / PG 日志。
+
+> 轮换是"停服—换钥—重启"的确定性流程，不做在线双写；如果未来需要零停机，必须另立切片设计双密钥签发与连接池排空。
+
+
 ## 3. 备份与恢复
 
 ```powershell
@@ -107,6 +142,7 @@ PowerShell 执行 `scripts/verify_secret_acl_windows.ps1 -SecretDir ... -OutJson
 | 启动校验 | 端口占用直接拒绝并报占用者；启动后确认**本次子进程**存活 + `/health/ready` + 用本实例密钥做身份探测；域清单按**子集**校验，允许运行时登记的自定义域 |
 | 停止校验 | pid 文件（JSON）记录实际监听者 + 启动器 + 本次 nonce；只有 nonce/app/端口/监听者匹配才终止；指向其它服务时拒绝且不碰对方；进程不存在则按陈旧 pid 处理 |
 | 首个请求可见性 | 成功响应在**响应头发送前**提交事务（`CommitBeforeSend`），客户端紧随其后的读取/审核不会读到未提交状态 |
+| 密钥轮换 | `rotate-keys`（停服）轮换 JWT + DB 应用口令；旧 JWT 进入宽限期，`retire-jwt-previous` 后旧令牌 401；管理员 DB 口令不在该命令内 |
 
 **冷启动 review 403（已定位并修复，2026-11-09）**：不是租户绑定/连接池预热问题。实测复现：
 `POST /documents` 返回 201 后 3.9ms 的 `POST /review` 得到 403，而数据库行在响应后 **158ms**
@@ -120,7 +156,7 @@ PowerShell 执行 `scripts/verify_secret_acl_windows.ps1 -SecretDir ... -OutJson
 - 备份是**逻辑备份**：不含角色与授权，恢复由脚本重建；未验证 `pg_basebackup` 物理备份；
 - 未做 PITR / 备份期间持续写入的恢复语义；
 - 未验证跨大版本恢复（旧版备份恢复到新版），升级路径见 `docs/UPGRADE-DRILL.md`；
-- 未验证密钥轮换策略（恢复实例换密钥后，旧令牌自然是 401，但没有轮换流程）；
+- 已实现停服式 JWT + DB 应用口令轮换；**未实现零停机双写**，也未把管理员 DB 口令纳入同一命令；
 - 单实例内多租户不在产品范围（一客户一实例）；
 - 交付包不含 `.acceptance/`（验收临时数据，已被 `.gitignore` 忽略）。
 - `pg_hba.conf` 由 `initdb` 生成（host=scram，local=trust）；Windows 无 unix socket，本片未额外收紧 local 行；
