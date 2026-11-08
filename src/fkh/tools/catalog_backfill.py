@@ -63,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"[dry-run] {version_id}")
                 continue
             # 与入库/决议共用同一套校验：规则来自实例配置，缺规则或货币不允许直接报错
-            rule = require_rule(conn, tenant_id)
+            rule = require_rule(conn, tenant_id, for_write=True)
             stats = IngestionRepository(conn, tenant_id).extract_catalog_items(
                 version_id=version_id, currency=args.currency, rule=rule
             )

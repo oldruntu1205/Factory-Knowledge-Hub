@@ -27,6 +27,8 @@ from tests.e2e._roles import drop_business_role, ensure_business_role
 from fkh.api.main import create_app
 from fkh.config import Settings
 
+pg_url_type = psycopg.Connection[Any]
+
 pytestmark = pytest.mark.requires_pg
 
 SECRET = "catalog-rules-secret-0123456789"
@@ -236,3 +238,75 @@ def test_rule_validation_rejects_bad_input(
         headers=_h(factory["token"]),
     )
     assert empty_currency.status_code == 422, empty_currency.text
+
+
+def test_rule_writes_and_updates_are_mutually_exclusive(
+    client: TestClient, factory: dict[str, Any], admin: pg_url_type
+) -> None:
+    """L1 2026-11-08 剩余条件：写入路径取规则行 FOR SHARE，与 PUT 的 FOR UPDATE 互斥。
+
+    双向验证：
+    1) 写入事务持有 FOR SHARE（未提交）→ PUT 被阻塞（拿不到排他锁）；
+    2) PUT 持有 FOR UPDATE（未提交）→ 写入路径加载规则被阻塞。
+    """
+    import threading
+
+    from fkh.domain.catalog_rules import load_rule, save_rule
+
+    tenant = uuid.UUID(factory["tenant"])
+    actor = uuid.UUID(factory["principal"])
+    writer = psycopg.connect(admin.info.dsn, autocommit=False)
+    upgrader = psycopg.connect(admin.info.dsn, autocommit=False)
+    try:
+        writer.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        assert load_rule(writer, tenant, for_write=True) is not None
+
+        blocked: list[BaseException] = []
+
+        def _try_update() -> None:
+            upgrader.execute("SET lock_timeout = '1500ms'")
+            try:
+                save_rule(upgrader, tenant, actor_id=actor,
+                          code_pattern=r"^SKU-[0-9]{4}-[0-9]{3}$", currencies=["CNY"])
+                upgrader.commit()
+            except BaseException as exc:  # noqa: BLE001 - 期望锁等待超时
+                upgrader.rollback()
+                blocked.append(exc)
+
+        thread = threading.Thread(target=_try_update)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "PUT 应被阻塞后超时返回，而不是静默成功"
+        assert blocked, "PUT 在写入事务持锁期间必须失败"
+        assert isinstance(blocked[0], psycopg.errors.LockNotAvailable)
+
+        writer.rollback()
+
+        # 反向：PUT 先持排他锁 → 写入路径加载规则被阻塞
+        upgrader.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+        upgrader.execute("SET lock_timeout = '1500ms'")
+        save_rule(upgrader, tenant, actor_id=actor,
+                  code_pattern=r"^[A-Z]{1,3}[0-9]{5,8}$", currencies=["CNY"])
+
+        write_blocked: list[BaseException] = []
+
+        def _try_load_for_write() -> None:
+            third = psycopg.connect(admin.info.dsn, autocommit=False)
+            third.execute("SET lock_timeout = '1500ms'")
+            try:
+                third.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+                load_rule(third, tenant, for_write=True)
+            except BaseException as exc:  # noqa: BLE001
+                write_blocked.append(exc)
+            finally:
+                third.close()
+
+        second = threading.Thread(target=_try_load_for_write)
+        second.start()
+        second.join(timeout=10)
+        assert not second.is_alive()
+        assert write_blocked and isinstance(write_blocked[0], psycopg.errors.LockNotAvailable)
+        upgrader.rollback()
+    finally:
+        writer.close()
+        upgrader.close()

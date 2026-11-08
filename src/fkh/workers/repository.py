@@ -256,7 +256,7 @@ class IngestionRepository:
         """
         # 所有写入路径共用同一套校验：调用方未显式传入规则时在此加载（缺规则即报错）
         if rule is None:
-            rule = require_rule(self._conn, self._tenant)
+            rule = require_rule(self._conn, self._tenant, for_write=True)
         if not rule.accepts_currency(currency):
             raise ValueError(f"货币 {currency} 不在本实例允许的目录货币集合内")
 

@@ -123,7 +123,7 @@ def create_group(
     if row is not None:
         return UUID(str(row[0]))
     # 并发下另一个事务先建了：拿它并加锁
-    rule = require_rule(conn, tenant_id)
+    rule = require_rule(conn, tenant_id, for_write=True)
     if not rule.accepts_code(code):
         raise ConflictError(f"货号 {code} 不符合本实例的货号规则，请先调整规则或数据")
 

@@ -183,7 +183,7 @@ def ingest_document(
                 catalog_note.append("catalog_skipped=no_currency")
             else:
                 # 2026-11-08（0036）：目录规则来自实例配置；缺失即报可识别的配置错误
-                rule = require_rule(conn, UUID(str(tenant_id)))
+                rule = require_rule(conn, UUID(str(tenant_id)), for_write=True)
                 catalog_stats = repo.extract_catalog_items(
                     version_id=version_id,
                     currency=request.catalog_currency,

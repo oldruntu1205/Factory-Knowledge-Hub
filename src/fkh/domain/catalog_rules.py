@@ -82,20 +82,29 @@ def _bind(conn: psycopg.Connection[Any], tenant_id: UUID) -> None:
     conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant_id),))
 
 
-def load_rule(conn: psycopg.Connection[Any], tenant_id: UUID) -> CatalogRule | None:
-    """读规则；未配置返回 None（读路径可继续，写路径需 `require_rule`）。"""
+def load_rule(
+    conn: psycopg.Connection[Any], tenant_id: UUID, *, for_write: bool = False
+) -> CatalogRule | None:
+    """读规则；未配置返回 None（读路径可继续，写路径需 `require_rule`）。
+
+    `for_write=True` 时对规则行取 **FOR SHARE** 并持有到事务结束：
+    与 `save_rule` 的 `FOR UPDATE` 互斥，保证"写入所用的规则不会在提交前被改掉"，
+    也保证 PUT 的存量检查能看到先提交的写入。
+    """
     _bind(conn, tenant_id)
-    row = conn.execute(
-        "SELECT code_pattern, currencies FROM catalog_rules WHERE tenant_id = %s",
-        (tenant_id,),
-    ).fetchone()
+    sql = "SELECT code_pattern, currencies FROM catalog_rules WHERE tenant_id = %s"
+    if for_write:
+        sql += " FOR SHARE"
+    row = conn.execute(sql, (tenant_id,)).fetchone()
     if row is None:
         return None
     return compile_rule(str(row[0]), list(row[1]))
 
 
-def require_rule(conn: psycopg.Connection[Any], tenant_id: UUID) -> CatalogRule:
-    rule = load_rule(conn, tenant_id)
+def require_rule(
+    conn: psycopg.Connection[Any], tenant_id: UUID, *, for_write: bool = False
+) -> CatalogRule:
+    rule = load_rule(conn, tenant_id, for_write=for_write)
     if rule is None:
         raise CatalogRuleMissing(
             "本实例尚未配置目录规则（货号正则与货币集合）；"
