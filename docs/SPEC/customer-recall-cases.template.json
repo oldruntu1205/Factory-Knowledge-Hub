@@ -1,0 +1,18 @@
+{
+  "note": "客户语料 recall 评测集模板：复制到 _corpus/customer_cases.json 后替换为真实问题与 needle；needle 必须逐字出现在对应文档的解析文本里。",
+  "k_default": 10,
+  "cases": [
+    {
+      "id": "C001",
+      "query": "这款冷凝管的磨口尺寸是多少",
+      "needle": "24/29",
+      "doc": "产品手册-冷凝管"
+    },
+    {
+      "id": "C002",
+      "query": "抽检不合格是整批退回还是可以让步接收",
+      "needle": "整批退回",
+      "doc": "质量协议"
+    }
+  ]
+}

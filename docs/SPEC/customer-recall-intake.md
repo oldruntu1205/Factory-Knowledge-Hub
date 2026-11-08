@@ -19,7 +19,9 @@
 
 ### B. 评测集 JSON
 
-放到 `_corpus/customer_cases.json`，格式：
+可先复制模板：`docs/SPEC/customer-recall-cases.template.json` → `_corpus/customer_cases.json`。
+
+格式：
 
 ```json
 {
