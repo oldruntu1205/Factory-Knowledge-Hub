@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -34,6 +33,8 @@ from fkh.tools.demo_page import PAGE
 from fkh.tools.documents_page import DOCUMENTS_PAGE
 from fkh.tools.evidence_client import EVIDENCE_JS
 from fkh.tools.experience_page import EXPERIENCE_PAGE
+from fkh.tools.pg import ensure_postgres as _ensure_postgres_impl
+from fkh.tools.pg import stop_postgres as _stop_postgres_impl
 from fkh.tools.training_page import TRAINING_PAGE
 
 DEMO_TENANT_NAME = "三爱思演示"
@@ -53,76 +54,12 @@ _TRAINING_TEXT = """冷凝管安装与检验（培训材料）
 """
 
 
-def _pg_bin() -> Path:
-    """复用随包安装的 PG 16 + pgvector 二进制。"""
-    import pgserver
-
-    return Path(pgserver.__file__).parent / "pginstall" / "bin"
-
-
-def _run(args: list[str], *, capture: bool = True) -> subprocess.CompletedProcess[Any]:
-    """跑 PG 二进制。
-
-    `pg_ctl start` **不能**用管道抓输出：它启动的 postgres 子进程会继承 stdout，
-    父进程读不到 EOF 就一直等下去（实测卡死 4 分钟）。启动这类命令一律用 DEVNULL。
-    """
-    if not capture:
-        return subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
-
-
 def ensure_postgres(pgdata: Path, port: int) -> str:
-    """确保内嵌 PG 在跑，返回 DSN。
-
-    不用 pgserver.get_server：它内部 `pg_ctl -w` 只等 10 秒，而本机 HDD 上一次非正常关机后的
-    fsync 恢复可能 30 秒以上，会被误判成启动失败（实测踩过两次）。
-    """
-    pgdata.mkdir(parents=True, exist_ok=True)
-    bin_dir = _pg_bin()
-
-    if not (pgdata / "PG_VERSION").exists():
-        created = _run(
-            [
-                str(bin_dir / "initdb.exe"),
-                "-D",
-                str(pgdata),
-                "-U",
-                "postgres",
-                "-A",
-                "trust",
-                "--encoding=UTF8",
-                "--locale=C",
-            ]
-        )
-        if created.returncode != 0:
-            raise SystemExit(f"initdb 失败：\n{created.stdout}\n{created.stderr}")
-
-    status = _run([str(bin_dir / "pg_ctl.exe"), "-D", str(pgdata), "status"])
-    if status.returncode != 0:
-        started = _run(
-            [
-                str(bin_dir / "pg_ctl.exe"),
-                "-D",
-                str(pgdata),
-                "-o",
-                f"-p {port} -h 127.0.0.1",
-                "-t",
-                "180",
-                "-l",
-                str(pgdata / "log"),
-                "start",
-            ],
-            capture=False,
-        )
-        if started.returncode != 0:
-            log = (pgdata / "log").read_text(encoding="utf-8", errors="replace")[-2000:]
-            raise SystemExit(f"PostgreSQL 启动失败：\n{started.stdout}\n{started.stderr}\n{log}")
-    return f"postgresql://postgres:@127.0.0.1:{port}/postgres"
+    return _ensure_postgres_impl(pgdata, port)
 
 
 def stop_postgres(pgdata: Path) -> None:
-    bin_dir = _pg_bin()
-    _run([str(bin_dir / "pg_ctl.exe"), "-D", str(pgdata), "-m", "fast", "-w", "-t", "120", "stop"])
+    _stop_postgres_impl(pgdata)
 
 
 def _apply_migrations(dsn: str) -> None:

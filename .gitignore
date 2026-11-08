@@ -47,3 +47,6 @@ fkh-bench-pgdata/
 .demo-pgdata/
 .tmp-pgdata/
 .instance-*/
+.acceptance/
+*.dump
+.acceptance_run.log
