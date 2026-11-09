@@ -48,7 +48,6 @@ from fkh.retrieval.search import (
 CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("POST", "/v1/sources", "knowledge.ingest", "申请上传与导入"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
-    ("POST", "/v1/training/feedback", "learner", "培训反馈"),
 ]
 
 
@@ -256,6 +255,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _BODY_LIMITS = {
         "/v1/knowledge/documents": MAX_REQUEST_BYTES,
         "/v1/feedback": MAX_FEEDBACK_BYTES,
+        "/v1/training/feedback": MAX_FEEDBACK_BYTES,
     }
 
     def _payload_too_large(request: Request) -> JSONResponse:

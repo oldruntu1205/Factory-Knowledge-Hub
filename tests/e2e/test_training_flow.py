@@ -551,6 +551,247 @@ def test_content_c3_is_not_released_by_default(
     assert response.status_code == 409, response.text
 
 
+def test_training_feedback_records_redacted_bad_case(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "expected_behavior": {"expected_status": "REFUSED", "must_cite": True},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["assignment_id"] == ctx["assignment_a"]
+    assert body["category"] == "TRAINING_FEEDBACK"
+
+    with psycopg.connect(world["dsn"]) as conn:
+        row = conn.execute(
+            """SELECT tenant_id, category, severity, redacted_case, expected_behavior
+                 FROM bad_cases WHERE id = %s""",
+            (body["bad_case_id"],),
+        ).fetchone()
+    assert row is not None
+    assert str(row[0]) == world["tenant"]
+    assert row[1] == "TRAINING_FEEDBACK"
+    assert row[2] == "P2"
+    assert row[3]["assignment_id"] == ctx["assignment_a"]
+    assert row[3]["course_id"] == ctx["course_id"]
+    assert row[3]["trace_id"] is None
+    assert row[4] == {"expected_status": "REFUSED", "must_cite": True}
+
+
+def test_training_feedback_rejects_other_learners_assignment(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_b"],
+            "expected_behavior": {"expected_status": "REFUSED"},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_training_feedback_rejects_other_learners_trace(
+    client: TestClient, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "fkh.api.answer_exec.get_generator",
+        lambda *a, **k: _Scripted("气密性测试的保压时间为 60 秒。"),
+    )
+    ctx = _setup_course(client, world)
+    asked = client.post(
+        "/v1/training/ask",
+        json={
+            "assignment_id": ctx["assignment_b"],
+            "question": "气密性测试的保压时间是多少？",
+            "language": "zh-CN",
+        },
+        headers=_h(world["token_b"]),
+    )
+    assert asked.status_code == 200, asked.text
+    trace_b = asked.json()["trace_id"]
+
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "trace_id": trace_b,
+            "expected_behavior": {"expected_status": "REFUSED"},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 404, response.text
+    assert trace_b not in response.text
+
+
+def test_training_feedback_requires_training_scope(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    outsider = _token(
+        world["tenant"],
+        uuid.uuid4().hex,
+        scopes=("learner",),
+        allowed=("internal_product",),
+        subject=world["learner_a"],
+    )
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "expected_behavior": {"expected_status": "REFUSED"},
+        },
+        headers=_h(outsider),
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_training_feedback_links_own_trace(
+    client: TestClient, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "fkh.api.answer_exec.get_generator",
+        lambda *a, **k: _Scripted("气密性测试的保压时间为 60 秒。"),
+    )
+    ctx = _setup_course(client, world)
+    asked = client.post(
+        "/v1/training/ask",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "question": "气密性测试的保压时间是多少？",
+            "language": "zh-CN",
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert asked.status_code == 200, asked.text
+    trace_id = asked.json()["trace_id"]
+
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "trace_id": trace_id,
+            "expected_behavior": {"expected_status": "ANSWERED", "must_cite": True},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    with psycopg.connect(world["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (world["tenant"],))
+        bad = conn.execute(
+            """SELECT query_id, redacted_case FROM bad_cases
+                WHERE tenant_id = %s AND id = %s""",
+            (world["tenant"], body["bad_case_id"]),
+        ).fetchone()
+        query = conn.execute(
+            """SELECT id, query_hash FROM rag_queries
+                WHERE tenant_id = %s AND trace_id = %s
+                ORDER BY created_at DESC LIMIT 1""",
+            (world["tenant"], trace_id),
+        ).fetchone()
+    assert bad is not None and query is not None
+    assert str(bad[0]) == str(query[0])
+    assert bad[1]["trace_id"] == trace_id
+    assert bad[1]["query_hash"] == str(query[1])
+
+
+def test_training_feedback_rejects_nonexistent_assignment_and_bad_body(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": str(uuid.uuid4()),
+            "expected_behavior": {"expected_status": "REFUSED"},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 403, response.text
+
+    invalid = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": str(uuid.uuid4()),
+            "expected_behavior": {"expected_status": "MAYBE"},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert invalid.status_code == 422, invalid.text
+
+    extra = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": str(uuid.uuid4()),
+            "expected_behavior": {"expected_status": "REFUSED"},
+            "tenant_id": "attacker",
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert extra.status_code == 422, extra.text
+
+
+def test_training_feedback_rejects_unavailable_course(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    revoked = client.post(
+        f"/v1/knowledge/{ctx['version_id']}/revoke?reason=feedback-test",
+        headers=_h(world["admin_token"]),
+    )
+    assert revoked.status_code == 200, revoked.text
+
+    response = client.post(
+        "/v1/training/feedback",
+        json={
+            "assignment_id": ctx["assignment_a"],
+            "expected_behavior": {"expected_status": "REFUSED"},
+        },
+        headers=_h(world["token_a"]),
+    )
+    assert response.status_code == 409, response.text
+
+
+def test_training_feedback_rejects_oversized_body(
+    client: TestClient, world: dict[str, Any]
+) -> None:
+    ctx = _setup_course(client, world)
+    with psycopg.connect(world["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (world["tenant"],))
+        before = conn.execute(
+            "SELECT count(*) FROM bad_cases WHERE tenant_id = %s AND category = 'TRAINING_FEEDBACK'",
+            (world["tenant"],),
+        ).fetchone()
+
+    response = client.post(
+        "/v1/training/feedback",
+        content=b"x" * (16 * 1024 + 1),
+        headers={
+            **_h(world["token_a"]),
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 413, response.text
+
+    with psycopg.connect(world["dsn"]) as conn:
+        conn.execute("SELECT set_config('app.tenant_id', %s, false)", (world["tenant"],))
+        after = conn.execute(
+            "SELECT count(*) FROM bad_cases WHERE tenant_id = %s AND category = 'TRAINING_FEEDBACK'",
+            (world["tenant"],),
+        ).fetchone()
+    assert before == after, "413 不应写入 bad_cases"
+    assert ctx["assignment_a"]
+
+
 def test_ask_cannot_reach_another_course_content(
     client: TestClient, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

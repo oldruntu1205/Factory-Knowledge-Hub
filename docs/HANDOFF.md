@@ -29,7 +29,7 @@
 | H · 词法排序 | 字级 OR 召回 + BM25 重排（`lexical-v3`）：冻结用例 recall 0.48→0.62，+8/-1 | 完成（`_evidence/lexical_v3_benchmark_20261106.md`） | 2026-11-06 |
 | G · 目录精确通道 | 货号→规格/单价：入库抽取 + 确定性查询 + 问答路由（不经过模型） | 完成（`docs/SPEC/catalog-exact.md`；客户目录实测 recall 0/30 → 精确查询） | 2026-11-06 |
 | F · 问答 | `POST /v1/knowledge/answer`：检索 → 本地推理 → 引用核验 → 状态判定 → 审计 | 完成（**本地推理 only**，`FKH_LLM_PROVIDER=none` 默认 503；ADR-04 未签期唯一允许形态；`docs/SPEC/answer-generation.md`） | 2026-11-06 |
-| F · 培训 | 建课、出题、发布、分派、测验判分、进度、导师签核 | 完成；通用坏例登记 `POST /v1/feedback` 已做（`docs/SPEC/feedback-bad-cases.md`）；`/v1/training/feedback` 仍 501 | 本轮 |
+| F · 培训 | 建课、出题、发布、分派、测验判分、进度、导师签核、通用/培训反馈 | 完成（`docs/SPEC/feedback-bad-cases.md`）；端到端验收与前端仍未做 | 本轮 |
 
 ## 3. 怎么跑
 

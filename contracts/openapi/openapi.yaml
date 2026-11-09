@@ -587,11 +587,35 @@ paths:
     post:
       tags: [training]
       summary: 形成受控坏例及课程反馈
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assignment_id, expected_behavior]
+              properties:
+                assignment_id: { type: string, minLength: 1, maxLength: 64 }
+                trace_id: { type: string, minLength: 1, maxLength: 128 }
+                expected_behavior:
+                  type: object
+                  additionalProperties: false
+                  required: [expected_status]
+                  properties:
+                    expected_status:
+                      type: string
+                      enum: [ANSWERED, REFUSED, HUMAN_REVIEW_REQUIRED]
+                    must_cite:
+                      type: boolean
+                      default: false
       responses:
         "201": { description: 已登记 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "404": { description: 培训问答 trace 不存在或不属于本人 }
+        "409": { description: 课程当前不可用 }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /v1/training/assignments/{assignment_id}/progress:
     get:

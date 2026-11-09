@@ -71,6 +71,16 @@ class FeedbackRequest(BaseModel):
     expected_behavior: ExpectedBehavior
 
 
+class TrainingFeedbackRequest(BaseModel):
+    """培训反馈：绑定本人任务；可选 trace_id 必须来自本人培训问答。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str = Field(min_length=1, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=128)
+    expected_behavior: ExpectedBehavior
+
+
 class ReviewRequest(BaseModel):
     """技术审核动作。PASS 提交审核，REJECT 退回草稿，APPROVE_INTERNAL 批准内部可用。"""
 

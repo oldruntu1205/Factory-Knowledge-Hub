@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Any
 from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, Depends, Request
+from psycopg.types.json import Jsonb
 
 from fkh.api.answer_exec import resolve_retrieval, run_answer
 from fkh.api.db import get_conn
@@ -26,6 +28,7 @@ from fkh.api.models import (
     QuestionCreateRequest,
     SignoffRequest,
     TrainingAskRequest,
+    TrainingFeedbackRequest,
 )
 from fkh.api.security import PrincipalDep
 from fkh.config import Settings, get_settings
@@ -307,3 +310,85 @@ def training_ask(
         only_version_ids=allowed_versions,
         max_classification=2,
     )
+
+
+TRAINING_FEEDBACK_CATEGORY = "TRAINING_FEEDBACK"
+
+
+@router.post("/v1/training/feedback", status_code=201, summary="培训反馈")
+def training_feedback(
+    payload: TrainingFeedbackRequest,
+    context: PrincipalDep,
+    conn: ConnDep,
+) -> dict[str, Any]:
+    """学员对本人课程/问答的受控反馈，落为 `bad_cases`。
+
+    - 任务必须属于本人且课程仍可用；他人任务与不存在统一 403（不泄露存在性）；
+    - `trace_id` 可选；一旦提供，必须是本人、`internal_training` 范围的问答，
+      否则 404；
+    - `expected_behavior` 只接受封闭结构，不接收自由文本/原始 query；
+    - 同一任务允许重复反馈；本轮不建独立课程反馈表，也不发 outbox 事件。
+    """
+    context.require_scope("learner")
+    if TRAINING_SCOPE not in context.allowed_scopes:
+        raise ApiError(ErrorCode.ACCESS_DENIED, detail=f"缺少数据范围 {TRAINING_SCOPE}")
+
+    service = TrainingService(conn, context.tenant_id)
+    assignment_id = _uuid(payload.assignment_id, "assignment_id")
+    try:
+        course = service.assert_can_ask(assignment_id, context.subject)
+    except (CourseNotFound, TrainingError) as exc:
+        raise _translate(exc) from exc
+
+    query_id: UUID | None = None
+    query_hash: str | None = None
+    if payload.trace_id:
+        row = conn.execute(
+            """SELECT id, principal_id, query_hash, scope
+                 FROM rag_queries
+                WHERE tenant_id = %s AND trace_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1""",
+            (context.tenant_id, payload.trace_id),
+        ).fetchone()
+        if (
+            row is None
+            or str(row[1]) != str(context.principal_id)
+            or str(row[3]) != TRAINING_SCOPE
+        ):
+            # 与"不存在"不可区分：不泄露他人问答是否存在
+            raise ApiError(ErrorCode.NOT_FOUND, detail="培训问答 trace 不存在")
+        query_id = row[0]
+        query_hash = str(row[2])
+
+    bad_case_id = uuid.uuid4()
+    redacted_case = {
+        "kind": TRAINING_FEEDBACK_CATEGORY,
+        "assignment_id": str(assignment_id),
+        "course_id": str(course["course_id"]),
+        "course_version": int(course["course_version"]),
+        "trace_id": payload.trace_id,
+        "query_hash": query_hash,
+    }
+    conn.execute(
+        """INSERT INTO bad_cases
+             (tenant_id, id, query_id, category, severity, redacted_case,
+              expected_behavior, regression_status)
+           VALUES (%s, %s, %s, %s, 'P2', %s, %s, 'OPEN')""",
+        (
+            context.tenant_id,
+            bad_case_id,
+            query_id,
+            TRAINING_FEEDBACK_CATEGORY,
+            Jsonb(redacted_case),
+            Jsonb(payload.expected_behavior.model_dump(mode="json")),
+        ),
+    )
+    return {
+        "bad_case_id": str(bad_case_id),
+        "assignment_id": str(assignment_id),
+        "trace_id": payload.trace_id,
+        "category": TRAINING_FEEDBACK_CATEGORY,
+        "severity": "P2",
+        "regression_status": "OPEN",
+    }
