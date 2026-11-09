@@ -62,6 +62,8 @@
 - 大租户检索：5000 块规模中位 142ms；10 万块**未刷新统计** p50 2.71s / p95 3.63s；
   **统计表刷新后** p50 **579ms** / p95 **1.48s**（单查询、非并发；刷新约 24s，失效期间回退 live）。
   证据：`_evidence/retrieval_perf_20261109.md`、`_evidence/retrieval_perf_stats_20261109.md`。
+- 统计刷新：`python -m fkh.retrieval.stats --watch`（compose `stats-refresher`）异步重建；
+  失败写 `FAILED/last_error`、可配 `FKH_STATS_ALERT_WEBHOOK`，查询继续回退 live。
 - 一致性检查抓不到"价格不含税"这类没有货号/数值的断言（L1 已明确此边界）。
 
 ---

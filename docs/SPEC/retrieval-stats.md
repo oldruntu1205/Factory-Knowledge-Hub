@@ -36,7 +36,29 @@
 ```powershell
 uv run python -m fkh.retrieval.stats --url "$FKH_DATABASE_URL" --tenant <uuid>
 uv run python -m fkh.retrieval.stats --url "$FKH_DATABASE_URL" --all
+uv run python -m fkh.retrieval.stats --url "$FKH_DATABASE_URL" --dirty
+uv run python -m fkh.retrieval.stats --url "$FKH_DATABASE_URL" --watch --interval 5 \
+  --alert-webhook "https://alerts.example/hooks/fkh"
+# 或环境变量 FKH_STATS_ALERT_WEBHOOK
 ```
+
+- `--dirty`：只处理未构建、`built_revision != source_revision`、或 `status=FAILED` 的 tenant；
+- `--watch`：持续巡检（发布/撤销后异步重建），单 tenant 失败会写 `status=FAILED/last_error`、
+  stderr 输出 `retrieval_stats_refresh_failed` 事件并返回非 0；查询侧继续回退 live；
+- `--alert-webhook` / `FKH_STATS_ALERT_WEBHOOK`：失败轮 POST `retrieval_stats_alert`
+  （含 dirty/refreshed/failed 与 tenant/error）；投递失败输出
+  `retrieval_stats_alert_delivery_failed`，不改变刷新退出码；
+- `mark_failed` 是条件更新：若已有 `built=source` 且 `READY/EMPTY` 的新成功，旧失败只上报、
+  不覆盖新状态；
+- 实例工具入口：
+
+```powershell
+uv run python -m fkh.tools.instance refresh-stats --workdir .instance-customer-x
+uv run python -m fkh.tools.instance status --workdir .instance-customer-x
+```
+
+`status` 会输出 `retrieval_stats`（status/source_revision/built_revision/generation/refreshed_at/last_error）。
+Docker Compose 已提供 `stats-refresher` 服务（owner 连接，`--watch --interval 5`）。
 
 ## 4. 读路径
 

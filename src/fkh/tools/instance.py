@@ -45,6 +45,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import psycopg
 
+from fkh.retrieval.stats import refresh_tenant
 from fkh.tools import winacl
 from fkh.tools.pg import ensure_postgres, pg_bin, postgres_status, run_pg, stop_postgres
 
@@ -1085,6 +1086,33 @@ def command_retire_jwt_previous(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_refresh_stats(args: argparse.Namespace) -> int:
+    """用实例管理员口令重建检索统计表（离线运维动作；REPEATABLE READ）。"""
+    workdir = Path(args.workdir).resolve()
+    record = load_instance(workdir)
+    pgdata = Path(record["pgdata"])
+    was_running = postgres_status(pgdata)
+    root_dsn = ensure_postgres(
+        pgdata, int(record["db_port"]),
+        superuser_password=_read_secret(workdir, "db_admin"),
+    )
+    try:
+        with psycopg.connect(root_dsn, autocommit=False) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            summary = refresh_tenant(conn, uuid.UUID(str(record["tenant_id"])))
+            conn.commit()
+    except BaseException:
+        if not was_running:
+            stop_postgres(pgdata)
+        raise
+    if not was_running:
+        stop_postgres(pgdata)
+        if postgres_status(pgdata):
+            raise SystemExit("统计刷新后内嵌 PostgreSQL 未能停止，请人工处理")
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0
+
+
 # ---------------------------------------------------------------- 备份 / 恢复
 def command_backup(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
@@ -1380,6 +1408,28 @@ def command_status(args: argparse.Namespace) -> int:
         owner = conn.execute(
             "SELECT tableowner FROM pg_tables WHERE tablename = 'knowledge_versions'"
         ).fetchone()
+        stats_info: dict[str, Any] | None = None
+        try:
+            with conn.transaction():
+                row = conn.execute(
+                    """SELECT status, source_revision, built_revision, generation,
+                              refreshed_at, last_error
+                         FROM retrieval_stats_state WHERE tenant_id = %s""",
+                    (record["tenant_id"],),
+                ).fetchone()
+            if row is None:
+                stats_info = {"status": "missing"}
+            else:
+                stats_info = {
+                    "status": str(row[0]),
+                    "source_revision": int(row[1]),
+                    "built_revision": int(row[2]) if row[2] is not None else None,
+                    "generation": int(row[3]),
+                    "refreshed_at": row[4].isoformat() if row[4] else None,
+                    "last_error": row[5],
+                }
+        except psycopg.errors.UndefinedTable:
+            stats_info = {"status": "unavailable（先应用迁移 0037）"}
     print(json.dumps({
         "name": record["name"],
         "api_port": record["api_port"],
@@ -1387,6 +1437,7 @@ def command_status(args: argparse.Namespace) -> int:
         "tenant_id": record["tenant_id"],
         "counts": counts,
         "versions": {str(s): int(c) for s, c in versions},
+        "retrieval_stats": stats_info,
         "app_role": {
             "name": record["app_role"],
             "rolsuper": bool(app_flags[0]) if app_flags else None,
@@ -1457,6 +1508,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retire.add_argument("--workdir", required=True)
     retire.set_defaults(func=command_retire_jwt_previous)
+
+    refresh = sub.add_parser(
+        "refresh-stats", help="用管理员口令重建检索统计表（离线运维；REPEATABLE READ）"
+    )
+    refresh.add_argument("--workdir", required=True)
+    refresh.set_defaults(func=command_refresh_stats)
 
     status = sub.add_parser("status", help="查看实例数据面（计数/版本/角色权限）")
     status.add_argument("--workdir", required=True)

@@ -19,6 +19,28 @@ services:
     expose:
       - "5432"
 
+  # 异步巡检：发布/撤销/ACL 变更会让统计失效；这里用 owner（迁移）连接重建，
+  # 未重建期间 API 自动回退 live，统计表只影响排序性能，不影响可见性。
+  stats-refresher:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - fkh.retrieval.stats
+      - --url
+      - "postgresql://${POSTGRES_OWNER:-fkh_owner}:${POSTGRES_PASSWORD:?必须显式设置}@db:5432/${POSTGRES_DB:-fkh}"
+      - --watch
+      - --interval
+      - "5"
+    environment:
+      FKH_STATS_ALERT_WEBHOOK: ${FKH_STATS_ALERT_WEBHOOK:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build:
       context: ..

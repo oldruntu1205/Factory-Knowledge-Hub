@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -266,6 +270,123 @@ def load_snapshot(
     return StatsSnapshot(tenant, int(generation), int(built), int(source), groups)
 
 
+def dirty_tenants(conn: psycopg.Connection[Any]) -> list[UUID]:
+    """需要重建的 tenant：未构建、revision 落后、或上次刷新失败。"""
+    rows = conn.execute(
+        """SELECT tenant_id FROM retrieval_stats_state
+            WHERE built_revision IS NULL
+               OR built_revision <> source_revision
+               OR status = 'FAILED'
+            ORDER BY tenant_id"""
+    ).fetchall()
+    return [UUID(str(row[0])) for row in rows]
+
+
+def mark_failed(url: str, tenant: UUID, error: str) -> None:
+    """在独立事务标记 FAILED；失败细节只留在运维状态里，不进检索响应。
+
+    条件更新避免较旧的失败覆盖较新的成功：若当前 built=source 且 READY/EMPTY，
+    说明已有新一轮刷新成功，这次失败只上报、不污染状态。
+    """
+    detail = error[:1000]
+    with psycopg.connect(url, autocommit=False) as conn:
+        conn.execute(
+            """UPDATE retrieval_stats_state
+                  SET status = 'FAILED', last_error = %s
+                WHERE tenant_id = %s
+                  AND NOT (
+                      built_revision IS NOT NULL
+                      AND built_revision = source_revision
+                      AND status IN ('READY', 'EMPTY')
+                  )""",
+            (detail, tenant),
+        )
+        conn.commit()
+
+
+def _send_alert(webhook: str, payload: dict[str, Any]) -> None:
+    """把失败事件 POST 到运维 webhook；送达失败只记录，不改变刷新退出码。"""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        webhook,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - 运维配置的固定 URL
+            response.read(1024)
+    except Exception as exc:  # noqa: BLE001 - 告警失败不能吞掉刷新失败
+        print(
+            json.dumps(
+                {
+                    "event": "retrieval_stats_alert_delivery_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+
+
+def refresh_dirty_once(
+    url: str,
+    *,
+    limit: int | None = None,
+    alert_webhook: str | None = None,
+    tenants: list[UUID] | None = None,
+) -> dict[str, Any]:
+    """刷新所有脏 tenant 一次；返回成功/失败计数，失败不会中断其他 tenant。
+
+    `tenants` 只供受控调用/测试指定子集；CLI 默认查全部。
+    """
+    if tenants is None:
+        with psycopg.connect(url, autocommit=False) as conn:
+            tenants = dirty_tenants(conn)
+            conn.rollback()
+    else:
+        tenants = list(tenants)
+    if limit is not None:
+        tenants = tenants[:limit]
+    refreshed = 0
+    failed: list[dict[str, str]] = []
+    for tenant in tenants:
+        try:
+            summary = _refresh_one(url, tenant)
+            refreshed += 1
+            print(json.dumps({"event": "retrieval_stats_refreshed", **summary}, ensure_ascii=False))
+        except Exception as exc:  # noqa: BLE001 - 单个 tenant 失败不能中断巡检
+            failed.append({"tenant_id": str(tenant), "error": f"{type(exc).__name__}: {exc}"})
+            try:
+                mark_failed(url, tenant, f"{type(exc).__name__}: {exc}")
+            except Exception as mark_exc:  # noqa: BLE001 - 标记失败也要继续巡检
+                print(
+                    json.dumps(
+                        {
+                            "event": "retrieval_stats_mark_failed_error",
+                            "tenant_id": str(tenant),
+                            "error": f"{type(mark_exc).__name__}: {mark_exc}",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                )
+            print(
+                json.dumps(
+                    {"event": "retrieval_stats_refresh_failed", **failed[-1]},
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+    result = {"dirty": len(tenants), "refreshed": refreshed, "failed": failed}
+    if failed and alert_webhook:
+        _send_alert(
+            alert_webhook,
+            {"event": "retrieval_stats_alert", **result},
+        )
+    return result
+
+
 def _refresh_one(url: str, tenant: UUID, *, attempts: int = 3) -> dict[str, Any]:
     """一次 tenant 重建；REPEATABLE READ 下并发状态变更可能 40001，整事务重试。"""
     for attempt in range(attempts):
@@ -282,15 +403,54 @@ def _refresh_one(url: str, tenant: UUID, *, attempts: int = 3) -> dict[str, Any]
     raise AssertionError("unreachable")
 
 
+def _watch(
+    url: str,
+    *,
+    interval: float,
+    max_iterations: int | None,
+    alert_webhook: str | None = None,
+) -> int:
+    iteration = 0
+    while max_iterations is None or iteration < max_iterations:
+        iteration += 1
+        result = refresh_dirty_once(url, alert_webhook=alert_webhook)
+        if result["failed"]:
+            return 1
+        if max_iterations is not None and iteration >= max_iterations:
+            break
+        time.sleep(max(0.2, interval))
+    return 0
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="重建检索统计表")
     parser.add_argument("--url", required=True, help="数据库 URL")
     parser.add_argument("--tenant", help="只重建一个 tenant UUID")
     parser.add_argument("--all", action="store_true", help="重建所有 tenant")
+    parser.add_argument("--dirty", action="store_true", help="只重建未构建/失效/FAILED 的 tenant")
+    parser.add_argument("--watch", action="store_true", help="持续巡检并重建脏 tenant")
+    parser.add_argument("--interval", type=float, default=5.0, help="巡检间隔秒数")
+    parser.add_argument("--max-iterations", type=int, default=None, help="测试/一次性巡检轮数")
+    parser.add_argument(
+        "--alert-webhook",
+        default=os.environ.get("FKH_STATS_ALERT_WEBHOOK"),
+        help="刷新失败时 POST JSON 的运维 webhook",
+    )
     args = parser.parse_args(argv)
-    if bool(args.tenant) == bool(args.all):
-        raise SystemExit("--tenant 与 --all 必须二选一")
+    modes = [bool(args.tenant), args.all, args.dirty, args.watch]
+    if sum(modes) != 1:
+        raise SystemExit("--tenant / --all / --dirty / --watch 必须四选一")
 
+    if args.watch:
+        return _watch(
+            args.url,
+            interval=args.interval,
+            max_iterations=args.max_iterations,
+            alert_webhook=args.alert_webhook,
+        )
+    if args.dirty:
+        result = refresh_dirty_once(args.url, alert_webhook=args.alert_webhook)
+        return 0 if not result["failed"] else 1
     if args.all:
         with psycopg.connect(args.url, autocommit=False) as conn:
             tenants = [

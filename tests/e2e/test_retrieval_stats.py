@@ -393,6 +393,152 @@ def test_write_waits_for_refresh_lock_and_invalidates(
     assert state is not None and state[0] > state[1]
 
 
+def test_dirty_refresh_and_watch(pg_url: str, admin: psycopg.Connection[Any]) -> None:
+    seed = _seed_tenant(admin, name=f"s-dirty-{uuid.uuid4().hex[:6]}", chunks=["冷凝管 规格"])
+    _refresh(admin, seed["tenant"])
+    admin.execute(
+        """INSERT INTO knowledge_chunks
+             (tenant_id, id, version_id, chunk_kind, chunk_text, chunk_sha256,
+              tokenizer_id, lexeme_tokenizer_id, heading_path, locator, metadata,
+              acl_policy_id, index_generation, lexeme)
+           VALUES (%s, %s, %s, 'child', %s, %s, 'approx-cjk-v1', 'cjk-char-v1',
+                   '{}', '{}', '{}', %s, 1, to_tsvector('simple', %s))""",
+        (
+            seed["tenant"], str(uuid.uuid4()), seed["version"], "试管 规格",
+            "0" * 64, seed["acl"], segment_cjk("试管 规格"),
+        ),
+    )
+    admin.commit()
+
+    dirty = stats_module.dirty_tenants(admin)
+    assert uuid.UUID(seed["tenant"]) in dirty
+    result = stats_module.refresh_dirty_once(pg_url)
+    assert result["refreshed"] >= 1
+    assert not result["failed"]
+    state = admin.execute(
+        "SELECT status, built_revision, source_revision FROM retrieval_stats_state"
+        " WHERE tenant_id=%s",
+        (seed["tenant"],),
+    ).fetchone()
+    assert state is not None and state[0] == "READY" and state[1] == state[2]
+
+    # watch 单轮：再制造一次 dirty，watch 应刷新后退出 0
+    admin.execute(
+        "UPDATE knowledge_versions SET status = 'APPROVED_INTERNAL' WHERE id = %s",
+        (seed["version"],),
+    )
+    admin.commit()
+    assert stats_module._watch(pg_url, interval=0.2, max_iterations=1) == 0
+
+
+def test_refresh_failure_marks_failed_and_falls_back(
+    pg_url: str, admin: psycopg.Connection[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed = _seed_tenant(admin, name=f"s-fail-{uuid.uuid4().hex[:6]}", chunks=["冷凝管 规格"])
+    _refresh(admin, seed["tenant"])
+    admin.execute(
+        """INSERT INTO knowledge_chunks
+             (tenant_id, id, version_id, chunk_kind, chunk_text, chunk_sha256,
+              tokenizer_id, lexeme_tokenizer_id, heading_path, locator, metadata,
+              acl_policy_id, index_generation, lexeme)
+           VALUES (%s, %s, %s, 'child', %s, %s, 'approx-cjk-v1', 'cjk-char-v1',
+                   '{}', '{}', '{}', %s, 1, to_tsvector('simple', %s))""",
+        (
+            seed["tenant"], str(uuid.uuid4()), seed["version"], "试管 规格",
+            "0" * 64, seed["acl"], segment_cjk("试管 规格"),
+        ),
+    )
+    admin.commit()
+
+    def boom(conn: psycopg.Connection[Any], tenant: uuid.UUID) -> dict[str, Any]:
+        raise RuntimeError("synthetic refresh failure")
+
+    # 打真实 refresh_tenant，而不是 _refresh_one：让 _refresh_one 的真实连接/事务路径
+    # 与 refresh_dirty_once 的真实 mark_failed 链路都被覆盖。
+    monkeypatch.setattr(stats_module, "refresh_tenant", boom)
+    result = stats_module.refresh_dirty_once(pg_url)
+    assert result["failed"] and any(
+        item["tenant_id"] == seed["tenant"] for item in result["failed"]
+    )
+    state = admin.execute(
+        "SELECT status, last_error, source_revision, built_revision"
+        " FROM retrieval_stats_state WHERE tenant_id=%s",
+        (seed["tenant"],),
+    ).fetchone()
+    assert state is not None
+    assert state[0] == "FAILED"
+    assert "synthetic refresh failure" in str(state[1])
+    assert state[2] > state[3]
+    # FAILED 仍不能阻断检索：回退 live 能看到新增块
+    retriever = LexicalRetriever(admin, uuid.UUID(seed["tenant"]))
+    n, _avg, _df = retriever._corpus_stats(  # noqa: SLF001
+        knowledge_scope=SCOPE,
+        subject=_subject(seed["tenant"], seed["principal"]),
+        terms=TERMS,
+    )
+    assert n == 2
+
+
+def test_one_tenant_failure_does_not_block_others(
+    pg_url: str, admin: psycopg.Connection[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = _seed_tenant(admin, name=f"s-bad-{uuid.uuid4().hex[:6]}", chunks=["冷凝管 规格"])
+    good = _seed_tenant(admin, name=f"s-good-{uuid.uuid4().hex[:6]}", chunks=["试管 规格"])
+    original = stats_module.refresh_tenant
+
+    def selective(conn: psycopg.Connection[Any], tenant: uuid.UUID) -> dict[str, Any]:
+        if tenant == uuid.UUID(bad["tenant"]):
+            raise RuntimeError("synthetic tenant failure")
+        return original(conn, tenant)
+
+    monkeypatch.setattr(stats_module, "refresh_tenant", selective)
+    result = stats_module.refresh_dirty_once(
+        pg_url, tenants=[uuid.UUID(bad["tenant"]), uuid.UUID(good["tenant"])]
+    )
+    assert [item["tenant_id"] for item in result["failed"]] == [bad["tenant"]]
+    assert result["refreshed"] == 1
+    good_state = admin.execute(
+        "SELECT status, built_revision, source_revision FROM retrieval_stats_state"
+        " WHERE tenant_id=%s",
+        (good["tenant"],),
+    ).fetchone()
+    assert good_state is not None and good_state[0] == "READY" and good_state[1] == good_state[2]
+    # 更旧的失败不能把已经 READY 的新状态改成 FAILED
+    stats_module.mark_failed(pg_url, uuid.UUID(good["tenant"]), "late stale failure")
+    still_good = admin.execute(
+        "SELECT status FROM retrieval_stats_state WHERE tenant_id=%s",
+        (good["tenant"],),
+    ).fetchone()
+    assert still_good is not None and still_good[0] == "READY"
+
+
+def test_alert_webhook_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[Any] = []
+
+    class Response:
+        def read(self, size: int = -1) -> bytes:
+            return b"ok"
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, timeout: int) -> Response:
+        sent.append(request)
+        return Response()
+
+    monkeypatch.setattr(stats_module.urllib.request, "urlopen", fake_urlopen)
+    stats_module._send_alert(  # noqa: SLF001
+        "https://alerts.example.test/fkh",
+        {"event": "retrieval_stats_alert", "failed": [{"tenant_id": "t"}]},
+    )
+    assert len(sent) == 1
+    assert sent[0].full_url == "https://alerts.example.test/fkh"
+    assert b"retrieval_stats_alert" in sent[0].data
+
+
 def test_rebuild_replaces_generation(pg_url: str, admin: psycopg.Connection[Any]) -> None:
     seed = _seed_tenant(admin, name=f"s-gen-{uuid.uuid4().hex[:6]}", chunks=["冷凝管 规格"])
     first = _refresh(admin, seed["tenant"])

@@ -62,6 +62,21 @@ uv run python -m fkh.tools.instance retire-jwt-previous --workdir .instance-cust
 uv run python -m fkh.tools.instance serve --workdir .instance-customer-x
 ```
 
+### 检索统计表刷新（性能，不是可见性）
+
+```powershell
+# 批量导入/发布后手动重建；10 万切片约 24s
+uv run python -m fkh.tools.instance refresh-stats --workdir .instance-customer-x
+
+# 查看统计状态（status/source_revision/built_revision/last_error）
+uv run python -m fkh.tools.instance status --workdir .instance-customer-x
+```
+
+- 刷新用管理员连接、`REPEATABLE READ`、状态行锁、generation 原子替换；失败会写
+  `status=FAILED/last_error`，检索自动回退 live，不阻断回答。
+- 需要异步自动刷新时，用 `python -m fkh.retrieval.stats --url <admin-dsn> --watch --interval 5`
+  （Docker Compose 已提供 `stats-refresher` 服务）。
+
 | 项 | 语义 |
 |---|---|
 | 前置 | `rotate-keys` / `retire-jwt-previous` 要求 API 已停止（避免新旧密钥并存期间状态不可解释） |
