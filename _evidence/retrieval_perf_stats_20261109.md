@@ -1,6 +1,7 @@
 # 检索统计子系统 Phase 1：10 万切片性能与一致性证据
 
 - 日期：2026-11-09
+- 提交：`f0b8281`（Phase 1）
 - 迁移：`0037_retrieval_stats.sql`
 - 代码：`src/fkh/retrieval/stats.py`、`src/fkh/retrieval/lexical.py`、`src/fkh/api/db.py`
 - 状态：Phase 1 实现完成，待 L1 终审；默认 v3 未改。

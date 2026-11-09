@@ -1,6 +1,7 @@
 # 检索统计表（Phase 1）
 
 - 日期：2026-11-09
+- 提交：`f0b8281`
 - 迁移：`0037_retrieval_stats.sql`
 - 代码：`src/fkh/retrieval/stats.py`、`src/fkh/retrieval/lexical.py`
 
