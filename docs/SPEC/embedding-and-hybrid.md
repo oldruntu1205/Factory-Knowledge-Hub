@@ -78,7 +78,7 @@
 | 融合后 ACL 补齐 | ✅ |
 | HTTP 接线（服务端 opt-in） | ✅ 2026-11-04：默认 `lexical`，`FKH_RETRIEVAL_MODE=hybrid` 才启用；`/v1/knowledge/context` 固定词法（判决 Q7） |
 | 真实 BGE-M3 推理 | ✅ 2026-11-04 已在本机 CPU 跑通（torch 2.15.0+cpu / ST 6.2.0 / 1024d）；缺模型/权重/推理失败一律 503，不静默降级 |
-| 真实语料 recall 实测 | ✅ 仓库文档语料 50 题：词法 0.06 / OR 变体 0.66 / 混合 0.80（`recall-benchmark.md`）；**客户语料未做**（提交模板/校验见 `customer-recall-intake.md`） |
+| 真实语料 recall 实测 | ✅ 仓库文档语料 50 题：词法 0.06 / OR 变体 0.66 / 混合 0.80（`recall-benchmark.md`）；客户目录 30 条试点：词法 0.500 / 混合 0.567（`_evidence/catalog_recall_pilot_20261109.md`，**不是客户验收**）；**客户描述类语料未做**（提交模板/校验见 `customer-recall-intake.md`） |
 | 生产启用 | ⬜ 未授权（判决 Q2；且评测显示词法查询构造本身需先修，见 `recall-benchmark.md` §6） |
 
 链路用 `DeterministicTestEmbedder`（哈希伪向量）验证过：它没有语义能力，

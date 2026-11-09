@@ -100,7 +100,15 @@ uv run python -m fkh.tools.recall_benchmark `
 > 阈值在任何评测结果出来**之前**冻结；不根据结果反向调门槛。
 > 如果 hybrid 未达下限，保持默认 `lexical`，把失败样本作为下一轮改进输入。
 
-## 5. 我不会做的事
+## 5. 已有的客户目录试点（不是验收）
+
+2026-11-09 用 `_corpus/catalog_2023.md` + 30 条目录询价用例跑过一次真实 BGE-M3：
+lexical recall@10 = 0.500，hybrid = 0.567（+0.067），doc@10 = 1.0；13 条两路都未命中。
+它是**目录询价**，正确路由是确定性 catalog 通道，不能代表描述类客户问题，也不满足 50–100 条要求。
+详见 [`_evidence/catalog_recall_pilot_20261109.md`](../../_evidence/catalog_recall_pilot_20261109.md)。
+该试点**不改变**默认 `lexical`，也不套用本页阈值。
+
+## 6. 我不会做的事
 
 - 不把客户语料发到任何远程 API；embedding 只用本地权重。
 - 不用合成问题冒充客户问题；不用仓库文档的结果替代客户验收。

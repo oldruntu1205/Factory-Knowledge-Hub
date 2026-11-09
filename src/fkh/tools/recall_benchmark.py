@@ -225,6 +225,21 @@ def _seed_tenant(conn: psycopg.Connection[Any]) -> tuple[UUID, UUID]:
     conn.execute(
         "INSERT INTO acl_policies (tenant_id, policy_json) VALUES (%s, %s)", (tenant, policy)
     )
+    # 0035/0036 之后 domain 有复合外键、目录抽取需要租户规则；评测实例也必须显式种子，
+    # 否则 benchmark 会在入库阶段被 FK 拒绝（2026-11-09 客户目录试点实测）。
+    conn.execute(
+        "INSERT INTO knowledge_domains (tenant_id, code, label, is_default)"
+        " VALUES (%s, 'product_catalog', '产品目录', true) ON CONFLICT DO NOTHING",
+        (tenant,),
+    )
+    conn.execute(
+        "INSERT INTO catalog_rules (tenant_id, code_pattern, currencies)"
+        " VALUES (%s, '^[A-Z]{1,3}[0-9]{5,8}$', ARRAY['CNY']) ON CONFLICT DO NOTHING",
+        (tenant,),
+    )
+    conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
+    conn.commit()
+    conn.execute("SELECT set_config('app.tenant_id', '', false)")
     conn.commit()
     return tenant, principal
 
