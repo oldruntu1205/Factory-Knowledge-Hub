@@ -25,6 +25,7 @@ from fkh.api.routes_config import router as config_router
 from fkh.api.routes_context import router as context_router
 from fkh.api.routes_documents import router as documents_router
 from fkh.api.routes_evidence import router as evidence_router
+from fkh.api.routes_feedback import router as feedback_router
 from fkh.api.routes_interview import router as interview_router
 from fkh.api.routes_review import router as review_router
 from fkh.api.routes_search import resolve_embedder
@@ -47,7 +48,6 @@ from fkh.retrieval.search import (
 CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
     ("POST", "/v1/sources", "knowledge.ingest", "申请上传与导入"),
     ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
-    ("POST", "/v1/feedback", "feedback.create", "反馈与坏例登记"),
     ("POST", "/v1/training/feedback", "learner", "培训反馈"),
 ]
 
@@ -252,6 +252,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_contract_routes(app)
     MAX_REQUEST_BYTES = 8 * 1024 * 1024
+    MAX_FEEDBACK_BYTES = 16 * 1024
+    _BODY_LIMITS = {
+        "/v1/knowledge/documents": MAX_REQUEST_BYTES,
+        "/v1/feedback": MAX_FEEDBACK_BYTES,
+    }
 
     def _payload_too_large(request: Request) -> JSONResponse:
         return JSONResponse(
@@ -265,18 +270,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _limit_upload_body(
         request: Request, call_next: Callable[[Request], Awaitable[Any]]
     ) -> Any:
-        # 上传请求体硬上限（L1 终审 2026-11-07 §3）：只查 Content-Length 不够，
-        # chunked 或"声明长度与实际不符"都能绕过，因此在接收层逐块累计，
-        # 超过 8 MiB 立刻 413，不把整包缓冲完再判断。
-        if request.url.path == "/v1/knowledge/documents" and request.method == "POST":
+        # 请求体硬上限（L1 终审 2026-11-07 §3）：只查 Content-Length 不够，
+        # chunked 或"声明长度与实际不符"都能绕过，因此在接收层逐块累计。
+        # 反馈体只需要 trace_id/category/两个标量，单独收紧到 16 KiB；
+        # 超过上限立刻 413，不把整包缓冲完再判断。
+        limit = _BODY_LIMITS.get(request.url.path) if request.method == "POST" else None
+        if limit is not None:
             declared = request.headers.get("content-length")
-            if declared is not None and declared.isdigit() and int(declared) > MAX_REQUEST_BYTES:
+            if declared is not None and declared.isdigit() and int(declared) > limit:
                 return _payload_too_large(request)
             received = 0
             buffered: list[bytes] = []
             async for chunk in request.stream():
                 received += len(chunk)
-                if received > MAX_REQUEST_BYTES:
+                if received > limit:
                     return _payload_too_large(request)
                 buffered.append(chunk)
             # 回填已缓冲正文供下游解析；否则流已耗尽，解析会拿到空 body
@@ -292,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(interview_router)
     app.include_router(config_router)
     app.include_router(evidence_router)
+    app.include_router(feedback_router)
     app.include_router(search_router)
 
     app.add_api_route(

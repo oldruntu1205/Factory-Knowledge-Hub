@@ -44,6 +44,33 @@ class TrainingAskRequest(BaseModel):
     language: Language
 
 
+class ExpectedBehavior(BaseModel):
+    """坏例的期望行为：只允许封闭枚举/布尔，不接收任意文本。
+
+    反馈接口最容易变成"任意 JSON 入库"的旁路：一旦允许自由文本，原始 query/PII
+    就可能绕过 `redacted_case` 被持久化。这里把结构固定为两层内、无字符串正文。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_status: Literal["ANSWERED", "REFUSED", "HUMAN_REVIEW_REQUIRED"]
+    must_cite: bool = False
+
+
+class FeedbackRequest(BaseModel):
+    """反馈/坏例登记（L1 §6.3）。
+
+    只接受 trace_id 定位一次已发生的问答；不接收原始 query 或租户字段，
+    避免把一个"反馈"接口变成任意内容写入或跨租户探测入口。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=64)
+    expected_behavior: ExpectedBehavior
+
+
 class ReviewRequest(BaseModel):
     """技术审核动作。PASS 提交审核，REJECT 退回草稿，APPROVE_INTERNAL 批准内部可用。"""
 
