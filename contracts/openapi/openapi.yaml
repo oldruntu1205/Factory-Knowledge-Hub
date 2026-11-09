@@ -12,8 +12,8 @@ info:
     - 403 不区分"资源不存在"与"无权限"，避免用于探测资源存在性。
     - 所有错误响应统一为 Error 结构，并携带 trace_id。
 
-    实现状态（Phase 0）：健康探针与认证已可用；业务端点已注册但返回 501，
-    检索链路在 Phase 2、培训问答在 Phase 3 接入。
+    实现状态：健康探针、认证、治理/检索/问答/培训/反馈已可用；`/v1/sources` 与
+    `/v1/knowledge/drafts` 仍返回 501；其余端点已接入。
 servers:
   - url: /
 security:
@@ -102,7 +102,7 @@ paths:
         "201": { description: 访谈任务已建立 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /v1/interviews/{interview_id}:
     get:
@@ -117,7 +117,7 @@ paths:
         "200": { description: 转写与草稿状态 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "404": { description: 访谈不存在或不属于当前租户 }
 
   /v1/knowledge/drafts:
     post:
@@ -543,7 +543,9 @@ paths:
                   course_version: { type: integer, minimum: 1 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "409": { description: 课程当前不可用或没有已批准知识源 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { description: 推理/检索能力未就绪 }
 
   /v1/training/attempts:
     post:
@@ -581,7 +583,8 @@ paths:
         "201": { description: 已签核 }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "501": { $ref: "#/components/responses/NotImplemented" }
+        "409": { description: 课程当前不可用 }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /v1/training/feedback:
     post:
