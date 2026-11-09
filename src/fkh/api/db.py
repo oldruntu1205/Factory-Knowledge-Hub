@@ -46,7 +46,10 @@ def clear_tenant(conn: psycopg.Connection[Any]) -> None:
 
 @contextmanager
 def tenant_connection(
-    pool: ConnectionPool[Any], tenant_id: Any
+    pool: ConnectionPool[Any],
+    tenant_id: Any,
+    *,
+    isolation: str | None = None,
 ) -> Iterator[psycopg.Connection[Any]]:
     """**唯一**允许从连接池取连接的入口（L1 2026-11-07 放行门禁）。
 
@@ -55,8 +58,15 @@ def tenant_connection(
     2. 正常 / 异常 / 取消路径都执行清理；
     3. 清理在**独立提交**里完成，不会被后续 rollback 撤销；
     4. 清理失败即丢弃连接（关闭），绝不把带残留租户的连接还回池子。
+
+    `isolation` 只能为 `REPEATABLE READ`（检索读路径）；必须在 `bind_tenant`
+    之前执行 `SET TRANSACTION`，否则 PostgreSQL 会拒绝。
     """
+    if isolation not in {None, "REPEATABLE READ"}:
+        raise ValueError(f"不支持的隔离级别：{isolation}")
     with pool.connection() as conn:
+        if isolation is not None:
+            conn.execute(f"SET TRANSACTION ISOLATION LEVEL {isolation}")
         bind_tenant(conn, tenant_id)
         completed = False
         try:
@@ -151,5 +161,22 @@ def get_conn(
     # 退出上下文时提交；异常时回滚，事务边界即请求边界。
     # 连接同时挂到 request.state，供 CommitBeforeSend 在响应发出前提交。
     with tenant_connection(pool, context.tenant_id) as conn:
+        request.state.conn = conn
+        yield conn
+
+
+def get_read_conn(
+    request: Request, context: PrincipalDep
+) -> Iterator[psycopg.Connection[Any]]:
+    """检索/问答读路径：请求级 REPEATABLE READ，统计、ACL 与候选同一快照。
+
+    L1 2026-11-09：`READ COMMITTED` 下 revision 校验后仍可能跨语句变化；
+    统计读取、ACL 判定与候选查询必须在同一快照。审计写入仍在本事务内，
+    因此使用 read-write REPEATABLE READ，而不是 READ ONLY。
+    """
+    pool = get_pool(request)
+    if pool is None:
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail="数据库未配置，业务端点不可用")
+    with tenant_connection(pool, context.tenant_id, isolation="REPEATABLE READ") as conn:
         request.state.conn = conn
         yield conn

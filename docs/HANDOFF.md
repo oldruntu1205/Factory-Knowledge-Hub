@@ -22,7 +22,7 @@
 | A · 采集与治理 | 解析、切片、入库、审核发布、ACL、终止路径 | 已完成（弃用路径 2026-11-05 落地：`DISCARDED` + 迁移 0013） | `16248f2` `6803710` `82eec2e` + 0013 |
 | B · 事件投递 | outbox 租约、令牌、死信、重放 | 已完成，告警未接线 | `b93a61b` |
 | C · 证据定位 | `GET /v1/evidence/{id}`：判定 + 正文 + 访问审计 | 已完成（`_evidence/l1_reply_evidence_20261103.md`） | `62f0f34`（0007） |
-| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）（`docs/SPEC/recall-benchmark.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 |
+| D · 检索 | 词法 + 向量双路、RRF 融合、ACL 前置、检索审计 | 库层 + HTTP 接线完成：**默认 `lexical`**，`FKH_RETRIEVAL_MODE=hybrid` opt-in；真实 BGE-M3 已跑通（CPU）；词法已改字级 OR（`lexical-v2`）：recall 0.06→0.68；混合 recall 0.84（生产未授权）；Phase 1 统计表（0037）使 10 万切片统计有效时 p50 579ms/p95 1.48s，失效回退 live（`docs/SPEC/retrieval-stats.md`） | `a60755a`（0008）+ `827ba1a` + 0011 接线 + 0037 |
 | 接缝 | 入库 → 审核 → 检索的真实链路 | 已通 | `19e61cf` |
 | E · 上下文 | 检索命中 → 生成用上下文 + 引用核验与拒答判定 | 完成（`POST /v1/knowledge/context`） | `50f5a26` |
 | I · 冲突决策接口 | `GET /v1/catalog/conflicts` + `POST .../resolve`；scope `catalog.read`/`catalog.resolve`；资源级拒绝统一 404 | 完成（`docs/SPEC/catalog-conflict-api.md`） | 2026-11-07 |

@@ -29,12 +29,8 @@ import psycopg
 
 from fkh.authz.policy import AclPolicy, Decision, Subject, evaluate
 from fkh.domain.lexeme import QUERY_FUNCTION, build_query, segment_cjk
-
-# 分词器必须是写入 lexeme 时使用的同一个；换分词器要重建索引，否则永远匹配不上
-# 生成 lexeme 的分词器版本，对应 knowledge_chunks.lexeme_tokenizer_id。
-# 不要用 knowledge_chunks.tokenizer_id：那是切片 token 计数版本（approx-cjk-v1），
-# 两者混用会让过滤条件永远不成立，检索静默返回空。
-TOKENIZER_ID = "cjk-char-v1"
+from fkh.retrieval.stats import load_snapshot
+from fkh.retrieval.visibility import TOKENIZER_ID, VISIBILITY_PREDICATE
 
 OVERFETCH = 4
 MAX_CANDIDATES = 200
@@ -51,15 +47,7 @@ BM25_B = 0.75
 
 # 可见性谓词：租户、范围、状态三件套。词法与向量两路必须用同一份，
 # 否则会出现"词法查得到、向量查不到"或反过来的口径漂移。
-# Rev2 §3.4/§4.4（2026-11-07 审计纠偏）：外部客服只允许 `PUBLISHED_PUBLIC + customer_public`；
-# 内部身份可以读 `APPROVED_INTERNAL`（不论 audience）。判据统一由
-# `fkh.authz.policy.is_external_customer(allowed_scopes)` 给出，三处（检索/目录/证据）共用。
-VISIBILITY_PREDICATE = """
-   AND v.required_scope = %(scope)s
-   AND ( (v.status = 'PUBLISHED_PUBLIC' AND v.audience = 'customer_public')
-      OR (%(internal)s AND v.status = 'APPROVED_INTERNAL') )
-"""
-
+# 具体字符串已下沉到 `fkh.retrieval.visibility`，统计表刷新复用同一份。
 _CANDIDATE_SQL = f"""
 SELECT c.id, c.version_id, v.document_id, c.chunk_text, c.locator, c.heading_path,
        p.policy_json, c.index_generation,
@@ -291,6 +279,44 @@ class LexicalRetriever:
         internal: bool = True,
         version_ids: tuple[UUID, ...] | None = None,
     ) -> tuple[int, float, dict[str, int]]:
+        # 统计表只覆盖“整租户 + scope”范围；课程问答的 version_ids 白名单仍走 live，
+        # 避免把课程外的统计混进课程内 BM25。
+        if version_ids is None:
+            try:
+                # 用 savepoint 包住统计读取：旧实例业务角色没有新表 SELECT 时，
+                # PostgreSQL 会把事务置为 aborted；必须回滚 savepoint 后才能走 live。
+                with self._conn.transaction():
+                    snapshot = load_snapshot(
+                        self._conn,
+                        self._tenant,
+                        scope=knowledge_scope,
+                        internal=internal,
+                        terms=terms,
+                    )
+            except psycopg.errors.InsufficientPrivilege:
+                snapshot = None
+            if snapshot is not None:
+                snap_n = 0
+                snap_total = 0
+                snap_df: dict[str, int] = {}
+                for group in snapshot.groups:
+                    decision, _reason = evaluate(
+                        _policy(group.policy_json), subject,
+                        resource_tenant_id=str(self._tenant),
+                    )
+                    if decision is not Decision.ALLOW:
+                        continue
+                    snap_n += group.docs
+                    snap_total += group.total_len
+                    for term, count in group.df.items():
+                        # stats 的 term 是规范化 lexeme（Latin 小写）；映射回查询原词，
+                        # 保持与 live `_STATS_SQL` 返回的 df key 一致。
+                        original = next(
+                            (item for item in terms if item.lower() == term.lower()), term
+                        )
+                        snap_df[original] = snap_df.get(original, 0) + count
+                return snap_n, (snap_total / snap_n) if snap_n else 0.0, snap_df
+
         rows = self._conn.execute(
             _STATS_SQL.format(visibility=VISIBILITY_PREDICATE),
             {

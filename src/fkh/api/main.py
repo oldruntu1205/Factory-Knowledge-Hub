@@ -120,7 +120,7 @@ def _answer(
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, detail="数据库未配置，业务端点不可用")
 
     try:
-        with tenant_connection(pool, context.tenant_id) as conn:
+        with tenant_connection(pool, context.tenant_id, isolation="REPEATABLE READ") as conn:
             service = AnswerService(
                 conn,
                 generator=generator,

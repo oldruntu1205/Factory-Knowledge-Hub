@@ -22,7 +22,7 @@ from uuid import uuid4
 import psycopg
 from fastapi import APIRouter, Depends, Request
 
-from fkh.api.db import get_conn
+from fkh.api.db import get_read_conn
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.models import SearchRequest
 from fkh.api.security import PrincipalDep
@@ -39,7 +39,7 @@ from fkh.retrieval.search import (
 
 router = APIRouter(tags=["knowledge"])
 
-ConnDep = Annotated[psycopg.Connection[Any], Depends(get_conn)]
+ConnDep = Annotated[psycopg.Connection[Any], Depends(get_read_conn)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 

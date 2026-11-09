@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Request
 from psycopg.types.json import Jsonb
 
 from fkh.api.answer_exec import resolve_retrieval, run_answer
-from fkh.api.db import get_conn
+from fkh.api.db import get_conn, get_read_conn
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.api.models import (
     AssignmentCreateRequest,
@@ -42,6 +42,7 @@ from fkh.domain.training import (
 router = APIRouter(tags=["training"])
 
 ConnDep = Annotated[psycopg.Connection[Any], Depends(get_conn)]
+ReadConnDep = Annotated[psycopg.Connection[Any], Depends(get_read_conn)]
 
 
 def _uuid(raw: str, field: str) -> UUID:
@@ -265,7 +266,7 @@ def training_ask(
     payload: TrainingAskRequest,
     context: PrincipalDep,
     settings: Annotated[Settings, Depends(get_settings)],
-    conn: ConnDep,
+    conn: ReadConnDep,
 ) -> dict[str, Any]:
     """学员带引用问答（Rev2 §13）。
 

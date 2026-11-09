@@ -30,7 +30,15 @@ from psycopg.types.json import Jsonb
 
 from fkh.authz.policy import Subject
 from fkh.domain.lexeme import build_query, segment_cjk
-from fkh.retrieval.lexical import _CANDIDATE_SQL, SCORING, TOKENIZER_ID, LexicalRetriever
+from fkh.retrieval.lexical import (
+    _CANDIDATE_SQL,
+    MAX_CANDIDATES,
+    OVERFETCH,
+    SCORING,
+    TOKENIZER_ID,
+    LexicalRetriever,
+)
+from fkh.retrieval.stats import refresh_tenant
 
 ROOT = Path(__file__).resolve().parents[3]
 BOILERPLATE = "以下是常用规格说明，实际尺寸以图纸为准，安装前请核对接口与材质。"
@@ -153,6 +161,16 @@ def _copy_chunks(
     conn.commit()
 
 
+def _refresh_stats(uri: str, tenant: str) -> dict[str, Any]:
+    with psycopg.connect(uri, autocommit=False) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        started = time.perf_counter()
+        summary = refresh_tenant(conn, UUID(tenant))
+        conn.commit()
+        summary["seconds"] = round(time.perf_counter() - started, 3)
+        return summary
+
+
 def _pct(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -181,7 +199,7 @@ def _measure(
             "scope": "internal_product",
             "internal": True,
             "lexeme_tokenizer": TOKENIZER_ID,
-            "limit": 200,
+            "limit": min(10 * OVERFETCH, MAX_CANDIDATES),
             "version_filter": None,
         }
         for _ in range(iterations):
@@ -211,6 +229,7 @@ def _measure(
         "p50_ms": _pct(totals, 0.50),
         "p95_ms": _pct(totals, 0.95),
         "max_ms": round(max(totals), 1) if totals else 0.0,
+        "candidate_limit": min(10 * OVERFETCH, MAX_CANDIDATES),
         "candidate_p50_ms": _pct(candidate_times, 0.50),
         "candidate_p95_ms": _pct(candidate_times, 0.95),
         "stats_p50_ms": _pct(stats_times, 0.50),
@@ -224,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pgdata", default=".perf-pgdata")
     parser.add_argument("--scales", nargs="+", type=int, default=[1000, 10000, 50000, 100000])
     parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--refresh-stats", action="store_true",
+                        help="每级插入后重建检索统计表（Phase 1 验证）")
     parser.add_argument("--output", default=None)
     args = parser.parse_args(argv)
 
@@ -267,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
             inserted = scale
             conn.execute("ANALYZE knowledge_chunks")
             conn.execute("ANALYZE knowledge_versions")
+            conn.commit()
+            if args.refresh_stats:
+                result_refresh = _refresh_stats(uri, tenant)
+                print(json.dumps({"stats_refresh": result_refresh}, ensure_ascii=False))
             result = _measure(retriever, subject, iterations=args.iterations)
             result["chunks"] = scale
             report["scales"].append(result)

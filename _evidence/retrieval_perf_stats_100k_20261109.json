@@ -1,0 +1,28 @@
+{
+  "scales": [
+    {
+      "queries": 5,
+      "iterations": 5,
+      "samples": 25,
+      "p50_ms": 578.6,
+      "p95_ms": 1481.8,
+      "max_ms": 1487.9,
+      "candidate_limit": 40,
+      "candidate_p50_ms": 547.4,
+      "candidate_p95_ms": 1451.7,
+      "stats_p50_ms": 36.8,
+      "stats_p95_ms": 51.3,
+      "avg_hits": 10.0,
+      "chunks": 100000
+    }
+  ],
+  "scoring": "lexical-v3",
+  "queries": [
+    "冷凝管的规格和接口是多少",
+    "试管有哪些常用尺寸",
+    "分液漏斗的材质要求",
+    "容量瓶的刻度误差",
+    "烧杯耐温差性能"
+  ],
+  "synthetic": true
+}
