@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from fkh.answer.prompt import build_prompt, extract_evidence_ids, uncovered_sentences
-from fkh.answer.service import AnswerNotConfigured, AnswerOutcome, AnswerService
+from fkh.answer.service import (
+    AnswerNotConfigured,
+    AnswerOutcome,
+    AnswerService,
+    build_commitment_keywords,
+)
 
 __all__ = [
     "AnswerNotConfigured",
     "AnswerOutcome",
     "AnswerService",
+    "build_commitment_keywords",
     "build_prompt",
     "extract_evidence_ids",
     "uncovered_sentences",

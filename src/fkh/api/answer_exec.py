@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 import psycopg
 
-from fkh.answer import AnswerNotConfigured, AnswerService
+from fkh.answer import AnswerNotConfigured, AnswerService, build_commitment_keywords
 from fkh.api.errors import ApiError, ErrorCode
 from fkh.config import Settings
 from fkh.generation import GenerationError, GenerationNotConfigured, get_generator
@@ -85,6 +85,9 @@ def run_answer(
             retrieval_mode=retrieval_mode or "lexical",
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
+            commitment_keywords=build_commitment_keywords(
+                settings.commitment_keywords_extra
+            ),
         )
         outcome = service.answer(
             query,

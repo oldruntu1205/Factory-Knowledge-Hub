@@ -50,7 +50,7 @@
 | 及格线、补考次数、完成判定 | ADR-TRAIN-02 未签，不自行设定阈值；**当前完成判定 = 导师实操签核 PASS**（成绩不参与判定），这是待裁决占位而非最终规则 |
 | 实操签核端点 | **已实现**（`c0fa2d8`）：`mentor` scope + 导师授权台账（`0021`） |
 | 培训问答 `/v1/training/ask` | **已实现**（`c0fa2d8`）：与知识问答同一条闸门 |
-| 培训反馈 `/v1/training/feedback` | 仍未实现（501 占位） |
+| 培训反馈 `/v1/training/feedback` | **已实现**（`e6add65`）：本人 learner + internal_training 任务；可选 trace 仅本人培训问答 |
 | 学习进度与知识检索联动 | 待签核逻辑确定后再做 |
 
 ### 5.1 正文本读取（`GET /v1/training/assignments/{id}/content`）

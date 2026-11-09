@@ -115,10 +115,17 @@ verdict             pass=true
 | # | 阻塞点 | 证据 | 建议 |
 |---|---|---|---|
 | 1 | ~~知识域枚举写死~~ | **已解决**（2026-11-08，`0035`）：`knowledge_domains` 实例配置 + 复合外键；未登记仍 422 但可自助登记（`POST /v1/config/domains`）。实机证据 `_evidence/domain_config_live.txt` | 明细见 `docs/SPEC/domain-config.md` |
-| 2 | **目录货号正则写死**：`^[A-Z]{1,3}[0-9]{5,8}$` | 非工厂货号（如 `SKU-2026-001`、纯数字条码）无法入库 | 按客户目录格式配置正则 |
-| 3 | **目录货币只允许 CNY** | 外贸客户用 USD/EUR 时无法入库 | 允许配置货币集合 |
-| 4 | **商务承诺词表内置中文外贸词** | 其他行业（如医院设备"巡检周期"）不会命中，靠语义兜底 | 词表移到应用层，支持按客户追加 |
+| 2 | ~~目录货号正则写死~~ | **已解决**（0036）：`catalog_rules.code_pattern` 实例配置；`provision --catalog-pattern` 可首装设置 |
+| 3 | ~~目录货币只允许 CNY~~ | **已解决**（0036）：`catalog_rules.currencies`；`provision --currencies USD,EUR` |
+| 4 | **商务承诺词表内置中文外贸词** | 其他行业词不会命中，靠语义兜底 | 已支持 `FKH_COMMITMENT_KEYWORDS_EXTRA` 按实例追加；内置拦截词不可删除 |
 | 5 | 演示语料/页面文案含工厂样板 | `_corpus/*`、`tools/demo_*` | 属演示资产，不进内核；新客户换语料即可 |
 
-第 1 项（知识域）已解决；剩下 2–4 项是"能跑但不精确"：货号正则与货币集合仍写死在内核，
-建议下一步按同样模式下沉为实例配置。
+第 1–3 项已解决；第 4 项已提供追加配置，仍保留内置安全词表（不提供删除入口）。
+首装非工厂实例时用：
+
+```powershell
+uv run python -m fkh.tools.instance provision --workdir .instance-customer \
+  --db-port 55501 --api-port 8151 --db-name fkh_customer \
+  --domain maintenance=保养 --domain product_catalog=产品目录 \
+  --catalog-pattern '^SKU-[0-9]{4}$' --currencies USD,EUR
+```

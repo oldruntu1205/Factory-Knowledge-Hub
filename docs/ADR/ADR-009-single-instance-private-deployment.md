@@ -37,9 +37,9 @@
 | 类别 | 现状 | 建议 |
 |---|---|---|
 | 知识域枚举 | **已落地**（2026-11-08，`0035`）：`knowledge_domains` 实例配置 + 复合外键；工厂 8 域只作为已有租户/工厂模板的种子 | — |
-| 目录货号规则 | DB CHECK `^[A-Z]{1,3}[0-9]{5,8}$` | 按客户目录格式配置（正则 + 校验器） |
-| 目录货币 | `currency IN ('CNY')` | 允许配置货币集合 |
-| 商务承诺词表 | `_COMMITMENT_KEYWORDS` 中文外贸词 | 按客户业务配置（词表文件），并允许附加英文/行业词 |
+| 目录货号规则 | **已落地**（2026-11-09，`0036`）：`catalog_rules` + `provision --catalog-pattern` | — |
+| 目录货币 | **已落地**（2026-11-09，`0036`）：`catalog_rules.currencies` + `provision --currencies` | — |
+| 商务承诺词表 | **已支持追加**（2026-11-09）：`FKH_COMMITMENT_KEYWORDS_EXTRA`；内置安全词不可删除 | 后续如需完整替换词表，再签 ADR |
 | 演示语料/页面文案 | `_corpus/*`、`tools/demo_*` | 属演示资产，不进内核 |
 
 本轮验收用 `bakery_equipment` 域试探，得到 **422**——这是当前**真实阻塞点**（见 `docs/DEPLOY-SINGLE-INSTANCE.md` §4）。

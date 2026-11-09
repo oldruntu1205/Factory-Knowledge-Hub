@@ -1,7 +1,7 @@
 # 工程交接与状态快照
 
-- 快照时间：2026-11-03 20:50
-- 对应提交：`b93a61b`（outbox 投递）+ 工作区未提交的 evidence 切片
+- 快照时间：2026-11-09 22:30
+- 对应提交：`767df24`（统计刷新自动化）+ 本基座收尾切片
 - 用途：让并行推进的另一条 lane（DSH / 其他开发代理）在不读全部代码的前提下接得上手
 
 ## 1. 一句话现状
@@ -36,7 +36,7 @@
 ```bash
 cd H:/MyWork/Factory-Knowledge-Hub
 uv sync --all-groups
-uv run pytest -q                 # 356 项，本地自动起 pgserver（同一时刻只能跑一份，见 §8.11）
+uv run pytest -q                 # 740 项，本地自动起 pgserver（同一时刻只能跑一份，见 §8.11）
 uv run ruff check src tests migrations
 uv run mypy
 uv run uvicorn fkh.api.main:app --port 8000
@@ -88,6 +88,12 @@ CI 用 `pgvector/pgvector:pg16` service，两条路径跑同一批迁移与断�
 | 0015 | 目录冲突人工复核队列：`catalog_conflict_groups` + `catalog_conflict_candidates`（RLS） | 已应用（本机） |
 | 0016 | 词法排序 v3：审计枚举补 `lexical-v3`（BM25 字级重排） | 已应用（本机） |
 | 0017 | 答案一致性审计：`rag_queries` 加 6 列（规则版本/claim 计数/耗时） | 已应用（本机） |
+| 0018–0025 | 问答路由、培训联动、索引发布闸门、引用可空、outbox 投递 | 已应用 |
+| 0026–0028 | 访谈/经验采集、草稿晋升 | 已应用 |
+| 0029–0034 | 目录事实级联、代回填、冲突决议快照与约束 | 已应用 |
+| 0035 | 知识域实例配置 | 已应用 |
+| 0036 | 目录货号规则/币种实例配置 | 已应用 |
+| 0037 | 检索统计表（Phase 1） | 已应用 |
 
 > 占号冲突处理（2026-11-04）：0009 原登记给草稿终止方案，但接缝修复先用到该号。
 > 按「后到者让位」处理，草稿终止顺延到 0010。已应用的迁移不改名——改名会让
@@ -172,3 +178,5 @@ uv run python migrations/apply.py --url "$URL" --status
 > **混合检索切片终审（2026-11-04）**：`e75f3c9` + `302c367` 经 L1 判定 **PASS**
 > （`_evidence/l1_reply_hybrid_wiring_rereview_20261104.md`）。迁移跳号规则已改成
 > 「允许跳号、禁止倒序回填、回滚按应用顺序」，见 WORKING-AGREEMENT §2。
+
+

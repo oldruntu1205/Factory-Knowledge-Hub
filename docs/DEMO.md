@@ -25,7 +25,7 @@ uv run python -m fkh.tools.demo_app --provider ollama --model qwen3:14b
 
 1. 首次运行 `initdb` 初始化 `.demo-pgdata/`（已存在则复用）；
 2. `pg_ctl` 启动 PG（**不走 pgserver.get_server**：它只等 10 秒，本机首次恢复可能 30 秒以上）；
-3. 应用全部迁移 `0001–0017`；
+3. 应用全部迁移 `0001–0037`；
 4. 播种「三爱思演示」租户：入库目录 → 审批 `APPROVED_INTERNAL` → 抽取目录条目与冲突待办；
    已存在则跳过；
 5. 起 API（同进程线程）与演示页（内置 http.server），浏览器里不出现任何令牌——

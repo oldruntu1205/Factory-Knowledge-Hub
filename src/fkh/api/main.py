@@ -1,8 +1,8 @@
 """knowledge-api 应用装配。
 
-Phase 0 的定位：把所有契约端点注册出来、把认证与错误格式固定下来，
-业务端点返回 501 而不是伪造结果。这样契约测试、网关接入和前端联调
-可以在检索链路完成前先跑起来，同时不会让任何未实现能力看起来"能用"。
+V1 只暴露已实现的契约端点；未进入 V1 的 `/v1/sources` 与
+`/v1/knowledge/drafts` 已从公开契约和路由中移除，避免出现“契约声明了但永远 501”
+的半成品。现有导入入口是 `POST /v1/knowledge/documents`，草稿由上传/审核流程产生。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import psycopg
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from fkh.answer import AnswerNotConfigured, AnswerService
+from fkh.answer import AnswerNotConfigured, AnswerService, build_commitment_keywords
 from fkh.api.db import CommitBeforeSend, create_pool, tenant_connection
 from fkh.api.errors import ApiError, ErrorCode, error_body, install_error_handlers
 from fkh.api.models import AnswerRequest
@@ -43,37 +43,6 @@ from fkh.retrieval.search import (
     SearchScopeNotAuthorized,
     SearchUnavailable,
 )
-
-# (方法, 路径, 所需权限, 说明)
-CONTRACT_ROUTES: list[tuple[str, str, str, str]] = [
-    ("POST", "/v1/sources", "knowledge.ingest", "申请上传与导入"),
-    ("POST", "/v1/knowledge/drafts", "knowledge.write", "创建知识草稿"),
-]
-
-
-def _not_implemented(label: str) -> Callable[[Request], Awaitable[None]]:
-    async def _handler(request: Request) -> None:
-        raise ApiError(ErrorCode.NOT_IMPLEMENTED, detail=f"{label} 属于后续阶段交付")
-
-    return _handler
-
-
-def _register_contract_routes(app: FastAPI) -> None:
-    for method, path, scope, summary in CONTRACT_ROUTES:
-        app.add_api_route(
-            path,
-            _not_implemented(summary),
-            methods=[method],
-            summary=summary,
-            dependencies=[Depends(require(scope))],
-            responses={
-                401: {"description": "未认证"},
-                403: {"description": "无权限"},
-                501: {"description": "当前阶段未实现"},
-            },
-            tags=["knowledge"] if path.startswith("/v1/knowledge") or "/interviews" in path
-            else (["evidence"] if "/evidence" in path else (["training"] if "/training" in path else ["ops"])),
-        )
 
 
 def _answer(
@@ -131,6 +100,9 @@ def _answer(
                 retrieval_mode=mode,
                 max_tokens=settings.llm_max_tokens,
                 temperature=settings.llm_temperature,
+                commitment_keywords=build_commitment_keywords(
+                    settings.commitment_keywords_extra
+                ),
             )
             outcome = service.answer(
                 payload.query,
@@ -249,7 +221,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return JSONResponse(status_code=200, content={"status": "ok", "checks": {"database": "ok"}})
 
-    _register_contract_routes(app)
+
     MAX_REQUEST_BYTES = 8 * 1024 * 1024
     MAX_FEEDBACK_BYTES = 16 * 1024
     _BODY_LIMITS = {

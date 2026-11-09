@@ -1,8 +1,10 @@
 # Factory Knowledge Hub · 交付边界与上线清单
 
-- 日期：2026-11-07
-- 适用范围：三爱思产品目录（`Catalog_2023.pdf`，85 页 / 1,252 条目录条目）
-- 一句话结论：**「查货号/报价」与「冲突治理」可以交付；「描述类问答」当前不可交付。**
+- 日期：2026-11-09
+- 对应提交：`767df24`（统计刷新自动化）+ 本收尾切片
+- 适用范围：三爱思产品目录（`Catalog_2023.pdf`，85 页 / 1,252 条目录条目）+ RAG 基座 V1
+- 一句话结论：**基座代码可冻结为 V1；「查货号/报价」与「冲突治理」可交付；
+  「描述类问答」只能内部试用 + 人工复核，不做对客承诺。**
 - 本清单只写能被数字或命令验证的内容；无法验证的一律标"未验证"。
 
 ---
@@ -72,15 +74,15 @@
 
 ```bash
 # 0. 代码与迁移
-git log --oneline -1                       # 期望 3088d46 之后
-uv run python -m migrations.apply --url "$FKH_DATABASE_URL"   # 期望：没有待应用迁移（0001–0017）
+git log --oneline -1                       # 期望 767df24 之后
+uv run python -m migrations.apply --url "$FKH_DATABASE_URL"   # 期望：没有待应用迁移（0001–0037）
 
 # 1. 上线自检（任一 FAIL 即 NO-GO）
 uv run python -m fkh.tools.release_check --url "$FKH_DATABASE_URL" --provider "$FKH_LLM_PROVIDER"
 
 # 2. 门禁
-uv run pytest -q                           # 期望 509 passed
-uv run pytest -q -m requires_pg            # 期望 306 passed / 0 skip
+uv run pytest -q                           # 期望 740 passed（本收尾切片后）
+uv run pytest -q -m requires_pg            # 期望 requires_pg 全过 / 0 skip
 uv run ruff check src tests migrations
 uv run mypy
 
@@ -97,9 +99,9 @@ uv run python -m fkh.tools.answer_regression \
   --model qwen3:14b --with-price-cases 10 --repeat 2
 ```
 
-- [ ] 迁移全部应用（0001–0017）
-- [ ] `release_check` 输出 **GO**
-- [ ] 门禁全绿（509 / 306 / ruff / mypy）
+- [ ] 迁移全部应用（0001–0037）
+- [ ] `release_check` 输出 **GO**（测试库实测 12 PASS / 1 WARN / 0 FAIL；WARN 为 provider=none）
+- [ ] 门禁全绿（740 passed / requires_pg / ruff / mypy）
 - [ ] 语料已审批、`catalog_items` 非空
 - [ ] 冲突待办已导出并交给运营（数量与库内一致）
 - [ ] `FKH_LLM_PROVIDER` 明确（`none` 时对外只承诺查货号/报价）
@@ -114,6 +116,8 @@ uv run python -m fkh.tools.answer_regression \
 | `FKH_JWT_SECRET` | 令牌校验 | 401 |
 | `FKH_RETRIEVAL_HASH_KEY` / `_ID` | 审计里 query 的 HMAC | 检索 503 |
 | `FKH_LLM_PROVIDER` | `none` / `ollama` | 描述类 503（不伪装成拒答） |
+| `FKH_COMMITMENT_KEYWORDS_EXTRA` | 按实例追加商务承诺词（逗号分隔） | 无；只追加，内置拦截词不可删除 |
+| `FKH_STATS_ALERT_WEBHOOK` | 统计刷新失败告警（可选） | 无；失败仍写 FAILED/last_error 并退出非 0 |
 
 ---
 
@@ -132,8 +136,8 @@ uv run python -m fkh.tools.answer_regression \
 
 | 场景 | 动作 |
 |---|---|
-| 代码回退 | `git revert <commit>`（每个切片独立提交：`893a1ed` 引用协议、`1e58de2` 词法 v3、`fb14004` 表格改写、`490cdf3`+`5f723a2`+`3088d46` 一致性检查） |
-| 迁移回滚 | `0017` / `0016` 有数据时**拒绝**（审计依据不可抹）；空库可回滚 |
+| 代码回退 | `git revert <commit>`（统计 Phase 1/自动化分别 `f0b8281`/`767df24`；契约收尾为本切片） |
+| 迁移回滚 | `0037` 回滚会删除统计表（检索自动回退 live）；`0017` / `0016` 有数据时**拒绝**（审计依据不可抹） |
 | 生成能力故障 | `FKH_LLM_PROVIDER=none` 重启 ⇒ 描述类 503，货号/报价不受影响 |
 | 检索排序异常 | 回退到 `1e58de2` 之前；`lexical-v2` 仍可读历史审计 |
 
@@ -202,3 +206,5 @@ API 仅发布到 `127.0.0.1:${API_PORT}`；`Dockerfile` 不含任何域名/证�
    （或内网私有 registry 分发），并确认目标机显存/磁盘。
 
 以上三条都需要你确认目标环境后我才能动手；在此之前我不会假装"部署已经就绪"。
+
+

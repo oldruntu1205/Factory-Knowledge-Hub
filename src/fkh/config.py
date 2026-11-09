@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_tokens: int = 1024
     llm_temperature: float = 0.0
+    # 外部客服的商务承诺词表：内置价期质保/定制等词不可删除，这里只允许按实例追加
+    # 行业词（逗号分隔），避免换行业时只能改内核。
+    commitment_keywords_extra: str = ""
 
     # Embedding（ADR-04/06）。数据不出境：只用本地权重，不提供任何远程 endpoint。
     # provider=none 时纯词法检索，不生成向量，也不假装有语义能力。

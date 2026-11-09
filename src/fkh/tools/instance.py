@@ -27,6 +27,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -45,6 +46,8 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import psycopg
 
+from fkh.domain.catalog_rules import CatalogRuleError, compile_rule
+from fkh.domain.domains import CODE_PATTERN
 from fkh.retrieval.stats import refresh_tenant
 from fkh.tools import winacl
 from fkh.tools.pg import ensure_postgres, pg_bin, postgres_status, run_pg, stop_postgres
@@ -494,6 +497,37 @@ def _assert_auth_isolation(record: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- 首装
+def _provision_domains(specs: list[str] | None) -> tuple[tuple[str, str], ...]:
+    """`--domain code=label`；未给时保留工厂/通用模板，给了就完全替换。"""
+    if not specs:
+        return DEFAULT_DOMAINS
+    domains: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for spec in specs:
+        code, sep, label = spec.partition("=")
+        code = code.strip()
+        label = label.strip()
+        if not sep or not code or not label:
+            raise SystemExit(f"--domain 格式必须是 code=label：{spec!r}")
+        if not CODE_PATTERN.match(code):
+            raise SystemExit(f"--domain code 必须小写字母开头、长度 2–64：{code!r}")
+        if code in seen:
+            raise SystemExit(f"--domain code 重复：{code}")
+        seen.add(code)
+        domains.append((code, label))
+    return tuple(domains)
+
+
+def _provision_currencies(value: str) -> list[str]:
+    currencies = [item.strip().upper() for item in value.split(",") if item.strip()]
+    if not currencies:
+        raise SystemExit("--currencies 至少需要一个币种")
+    for currency in currencies:
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            raise SystemExit(f"币种必须是 3 位大写字母：{currency!r}")
+    return currencies
+
+
 def command_provision(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
     if instance_path(workdir).exists():
@@ -510,6 +544,19 @@ def command_provision(args: argparse.Namespace) -> int:
         print(json.dumps({"reused": True, "workdir": str(workdir),
                           "tenant_id": existing["tenant_id"]}, ensure_ascii=False))
         return 0
+
+    domains = _provision_domains(args.domain)
+    catalog_pattern = args.catalog_pattern.strip()
+    try:
+        re.compile(catalog_pattern)
+    except re.error as exc:
+        raise SystemExit(f"--catalog-pattern 不是合法正则：{exc}") from exc
+    try:
+        rule = compile_rule(catalog_pattern, _provision_currencies(args.currencies))
+    except CatalogRuleError as exc:
+        raise SystemExit(f"目录规则非法：{exc}") from exc
+    catalog_pattern = rule.code_pattern
+    currencies = list(rule.currencies)
 
     if (workdir / "pgdata").exists() and any((workdir / "pgdata").iterdir()):
         raise SystemExit(f"目标目录已有数据：{workdir / 'pgdata'}；provision 只接受空环境")
@@ -543,7 +590,9 @@ def command_provision(args: argparse.Namespace) -> int:
         "app_role": role,
         "api_port": args.api_port,
         "secret_dir": "secrets",
-        "domains": [code for code, _ in DEFAULT_DOMAINS],
+        "domains": [code for code, _ in domains],
+        "catalog_pattern": catalog_pattern,
+        "currencies": currencies,
         "created_at": created_at,
         # 密钥元数据：只放标识与时间，不放任何密钥/Toke
         "jwt_key_id": "jwt-1",
@@ -568,7 +617,7 @@ def command_provision(args: argparse.Namespace) -> int:
             (tenant, agent, args.agent_subject),
         )
         conn.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant),))
-        for code, label in DEFAULT_DOMAINS:
+        for code, label in domains:
             conn.execute(
                 "INSERT INTO knowledge_domains (tenant_id, code, label, is_default)"
                 " VALUES (%s, %s, %s, true) ON CONFLICT DO NOTHING",
@@ -577,7 +626,7 @@ def command_provision(args: argparse.Namespace) -> int:
         conn.execute(
             "INSERT INTO catalog_rules (tenant_id, code_pattern, currencies)"
             " VALUES (%s, %s, %s) ON CONFLICT (tenant_id) DO NOTHING",
-            (tenant, DEFAULT_CATALOG_PATTERN, DEFAULT_CURRENCIES),
+            (tenant, catalog_pattern, currencies),
         )
         conn.commit()
 
@@ -1462,6 +1511,18 @@ def build_parser() -> argparse.ArgumentParser:
     provision.add_argument("--agent-subject", default="agent@customer.local")
     provision.add_argument("--reuse", action="store_true",
                            help="已初始化时幂等复用原实例（保留租户/主体/数据/令牌）")
+    provision.add_argument(
+        "--domain", action="append", metavar="CODE=LABEL",
+        help="实例知识域，可重复；不写则用通用四域模板",
+    )
+    provision.add_argument(
+        "--catalog-pattern", default=DEFAULT_CATALOG_PATTERN,
+        help="目录货号正则（默认 %(default)s）",
+    )
+    provision.add_argument(
+        "--currencies", default=",".join(DEFAULT_CURRENCIES),
+        help="目录允许币种，逗号分隔（默认 %(default)s）",
+    )
     provision.set_defaults(func=command_provision)
 
     serve = sub.add_parser("serve", help="用业务角色启动 API（校验密钥与实例身份）")

@@ -180,6 +180,13 @@ def _declared_v1(spec: dict[str, Any]) -> set[tuple[str, str]]:
     return pairs
 
 
+def test_unreleased_endpoints_are_not_exposed(client: TestClient) -> None:
+    """V1 不保留永久 501：未进入 V1 的路径直接 404，避免被误当成可用能力。"""
+    for path in ("/v1/sources", "/v1/knowledge/drafts"):
+        response = client.post(path, json={}, headers={"Authorization": f"Bearer {_token()}"})
+        assert response.status_code == 404, (path, response.status_code)
+
+
 def test_openapi_matches_registered_routes() -> None:
     spec = yaml.safe_load(OPENAPI.read_text(encoding="utf-8"))
     registered = _registered_v1()

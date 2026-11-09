@@ -106,18 +106,30 @@ def _is_external_customer(context: SearchContext) -> bool:
     return is_external_customer(context.allowed_scopes)
 
 
-def _is_commitment_request(query: str) -> bool:
-    return any(keyword in query.lower() for keyword in _COMMITMENT_KEYWORDS)
+def build_commitment_keywords(extra: str = "") -> tuple[str, ...]:
+    """内置安全词表 + 实例追加词；只允许追加，不能通过配置删除内置拦截。"""
+    additions = tuple(
+        item.strip().lower() for item in extra.split(",") if item.strip()
+    )
+    return _COMMITMENT_KEYWORDS + additions
 
 
-def _external_needs_human(query: str, generator: TextGenerator | None) -> bool:
+def _is_commitment_request(query: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in query.lower() for keyword in keywords)
+
+
+def _external_needs_human(
+    query: str,
+    generator: TextGenerator | None,
+    keywords: tuple[str, ...] = _COMMITMENT_KEYWORDS,
+) -> bool:
     """外部客服的商务类问题判定（fail-closed）。
 
     1) 确定性词表命中 → 转人工（可解释、可回归）；
     2) 未命中 → 语义识别；只有明确"否"才放行；
        识别失败 / 抛错 / 无模型 → 转人工（宁可多转，不可漏拦）。
     """
-    if _is_commitment_request(query):
+    if _is_commitment_request(query, keywords):
         return True
     if generator is None:
         return True
@@ -185,6 +197,7 @@ class AnswerService:
         temperature: float = 0.0,
         max_blocks: int = 8,
         max_context_tokens: int = 6000,
+        commitment_keywords: tuple[str, ...] | None = None,
     ) -> None:
         self._conn = conn
         self._generator = generator
@@ -197,6 +210,7 @@ class AnswerService:
         self._temperature = temperature
         self._max_blocks = max_blocks
         self._max_context_tokens = max_context_tokens
+        self._commitment_keywords = commitment_keywords or _COMMITMENT_KEYWORDS
 
     # ---- 主流程 ------------------------------------------------------------
     def answer(
@@ -217,7 +231,9 @@ class AnswerService:
         # 外部客服（只有 customer_public 数据范围）的商务承诺类问题必须转人工（Rev2 §4.5）：
         # 价格、交期、质量承诺、定制可行性**都不许由系统直接给答案**，也不许走
         # 目录精确通道——那条通道会自动把单价读出来。
-        if _is_external_customer(context) and _external_needs_human(query, self._generator):
+        if _is_external_customer(context) and _external_needs_human(
+            query, self._generator, self._commitment_keywords
+        ):
             if query_hash is not None:
                 self._audit(
                     context=context,
