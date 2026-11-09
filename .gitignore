@@ -43,6 +43,7 @@ tmp???????
 _corpus/
 fkh-bench-pgdata/
 .bench-pgdata/
+.perf-pgdata/
 .verify-*-pgdata/
 .demo-pgdata/
 .tmp-pgdata/
