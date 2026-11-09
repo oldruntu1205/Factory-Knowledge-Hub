@@ -1,7 +1,7 @@
 # RAG 基座 V1 收尾记录
 
 - 日期：2026-11-09
-- 基线：`767df24` + 本收尾切片（契约清理 / 实例配置参数化 / 承诺词表追加）
+- 基线：`767df24` + `9963980`（契约清理 / 实例配置参数化 / 承诺词表追加）
 - 定位：**单实例私域、可复用 RAG 基座**（ADR-009）；不是客户验收报告，不做 SaaS/计费。
 
 ## 1. 收尾判断
@@ -93,4 +93,5 @@ uv run python migrations/apply.py --url "$FKH_DATABASE_URL" --rollback 1
 
 契约移除的回滚：恢复 `main.py` 的 `CONTRACT_ROUTES` 与 OpenAPI 两段即可；V1 客户端
 不应依赖 501 路径。
+
 
